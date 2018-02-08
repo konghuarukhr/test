@@ -268,7 +268,7 @@ static unsigned int server_encap(void *priv, struct sk_buff *skb,
 	return NF_ACCEPT;
 }
 
-static const struct nf_hook_ops iproxy_ops[] = {
+static const struct nf_hook_ops iproxy_nf_ops[] = {
 	{
 		.hook = server_decap,
 		.pf = NFPROTO_IPV4,
@@ -281,6 +281,27 @@ static const struct nf_hook_ops iproxy_ops[] = {
 		.hooknum = NF_INET_PRE_ROUTING,
 		.priority = NF_IP_PRI_LAST,
 	},
+};
+
+static void iproxy_nl_input(struct sk_buff *skb)
+{
+	struct sk_buff *skb;
+	struct nlmsghdr *nlh = NULL;
+	u8 *data = NULL;
+	nlh = nlmsg_hdr(skb);
+
+	while ((skb = skb_dequeue(&sk->receive_queue)) 
+			!= NULL) {
+		/* process netlink message pointed by skb->data */
+		nlh = (struct nlmsghdr *)skb->data;
+		data = NLMSG_DATA(nlh);
+		/* process netlink message with header pointed by 
+		 * nlh and data pointed by data
+		 */
 }
+
+static struct netlink_kernel_cfg iproxy_nl_cfg = {
+	.input = iproxy_nl_input;
+};
 
 #include "module.i"
