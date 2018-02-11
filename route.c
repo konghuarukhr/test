@@ -23,7 +23,7 @@ void route_tbl_init(__be32 *network, int *mask, int size)
 	}
 
 	for (int i = 0; i < size; i++) {
-		struct route_tbl *rt = &route_tbl[32 - maks[i]];
+		struct route_tbl *rt = &route_tbl[32 - mask[i]];
 		struct route_entry *re = kmalloc(sizeof *re, GFP_KERNEL);
 		re->network = network[i];
 		hash_add(rt->route_entry, &re->node, re->network);
@@ -31,7 +31,7 @@ void route_tbl_init(__be32 *network, int *mask, int size)
 	}
 }
 
-void route_tbl_deinit(void)
+void route_tbl_uninit(void)
 {
 	for (int i = 0; i < ROUTE_TBL_SIZE; i++) {
 		struct route_tbl *rt = &route_tbl[i];

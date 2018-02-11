@@ -304,4 +304,39 @@ static struct netlink_kernel_cfg iproxy_nl_cfg = {
 	.input = iproxy_nl_input;
 };
 
+int import_route(struct sk_buff *skb, struct genl_info *info)
+{
+}
+
+enum {
+	IMPORT_ROUTE,
+};
+
+enum {
+	XX
+};
+
+static struct nla_policy iproxy_genl_policy[] = {
+	[IMPORT_ROUTE] = {},
+}
+
+static const struct genl_ops iproxy_genl_ops[] = {
+	{
+		.cmd = IMPORT_ROUTE,
+		.doit = import_route,
+	},
+}
+
+static struct genl_family iproxy_genl_family = {
+	.hdrsize = 0,
+	.name = "IPROXY",
+	.version = 0x01,
+	.maxattr = SMC_PNETID_MAX,
+	.netnsok = true,
+	.ops = iproxy_genl_ops,
+	.n_ops = ARRAY_SIZE(iproxy_genl_ops),
+	.module = THIS_MODULE,
+};
+
+
 #include "module.i"
