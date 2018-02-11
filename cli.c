@@ -114,18 +114,32 @@ static struct route_entry *load_route_table(const char *file)
 
 bool clear_kernel_route_table(struct socket *sk)
 {
+	struct genlsk *genlsk = open_genl_socket("IPROXY_SERVER");
+	if (!genlsk) {
+		return false;
+	}
 
+
+	close_genl_socket(genlsk);
+	return true;
 }
 
 bool restore_kernel_route_table(struct route_table *rt_tbl)
 {
-	int faid = get_genl_faid("IPROXY_SERVER");
+	struct genlsk *genlsk = open_genl_socket("IPROXY_SERVER");
+	if (!genlsk) {
+		return false;
+	}
+
 	for (int i = 0; i < rt_tbl->size; i++) {
 		struct route_entry *re = &rt_tbl->entries[i];
-		if (send_genl_route(faid, re)) {
-			fprintf(stderr, "");
+		if (add_kernel_route(genlsk, re->network, re->mask) < 0) {
+			return false;
 		}
 	}
+
+	close_genl_socket(genlsk);
+	return true;
 }
 
 int main(int argc, char *argv[])
@@ -162,204 +176,17 @@ load_route_table_err:
 
 }
 
-#define GENL_LENGTH(len) NLMSG_LENGTH((len) + GENL_HDRLEN)
-#define GENL_SPACE(len) NLMSG_SPACE((len) + GENL_HDRLEN)
-#define GENL_DATA(nlh) (void *)((char *)NLMSG_DATA(nlh) + GENL_HDRLEN)
 
-static struct genl_family iproxy_server_genl = {
 
-}
-
-struct genlsk *open_nl_socket(const char *name)
-{
-	struct genlsk *genlsk = malloc(sizeof *genlsk);
-	if (!genlsk) {
-		fprintf(stderr, "failed to alloc genlsk: %s\n",
-				strerror(errno));
-		goto malloc_err;
-	}
-
-	int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_GENERIC);
-	if (fd < 0) {
-		fprintf(stderr, "failed to open socket: %s\n", strerror(errno));
-		goto socket_err;
-	}
-
-	struct sockaddr_nl dst;
-	memset(&dst, 0, sizeof dst);
-	dst.nl_family = AF_NETLINK;
-	if (connect(fd, &dst, sizeof dst) < 0) {
-		fprintf(stderr, "failed to connect: %s\n", strerror(errno));
-		goto connect_err;
-	}
-
-	genlsk->fd = fd;
-	genlsk->faid = GENL_ID_CTRL;
-	genlsk->seq = 0;
-	genlsk->pid = getpid();
-
-	put_nl_hdr(genlsk);
-	put_genl_hdr(genlsk, CTRL_CMD_GETFAMILY);
-	put_nl_attr(genlsk, CTRL_ATTR_FAMILY_NAME, name, strlen(name) + 1);
-	if (send_nl_cmd(genl) < 0) {
-		fprintf(stderr, "failed to send: %s\n", strerror(errno));
-		goto send_nl_cmd_err;
-	}
-
-	if (recv_nl_resp(genlsk) < 0) {
-		fprintf(stderr, "failed to recv: %s\n", strerror(errno));
-		goto recv_nl_resp_err;
-	}
-
-	struct nlmsghdr *nlh = (struct nlmsghdr *)genlsk->buf;
-	struct nlattr *nla = (struct nlattr *)GENL_DATA(nlh);
-	int len = NLMSG_PAYLOAD(nlh, GENL_HDRLEN);
-	if (len < sizeof NLA_HDRLEN || len < NLA_ALIGN(nla->nla_len)) {
-		goto parse_faid_err;
-	}
-	nla = (struct nlattr *)((char *)nla + NLA_ALIGN(nla->nla_len));
-	len -= NLA_ALIGN(nla->nla_len);
-	if (len < sizeof NLA_HDRLEN || len < NLA_ALIGN(nla->nla_len)) {
-		goto parse_faid_err;
-	}
-	if (nla->nla_type != CTRL_ATTR_FAMILY_ID || nla->nla_len < 2) {
-		goto parse_faid_err;
-	}
-
-	genlsk->faid = *(uint16_t *)NLA_DATA(nla);
-
-parse_faid_err:
-recv_nl_resp_err:
-send_nl_cmd_err:
-connect_err:
-	close(fd);
-socket_err:
-	free(genlsk);
-malloc_err:
-	return NULL;
-}
-
-int close_nl_socket(int fd)
-{
-	return close(fd);
-}
-
-void put_nl_hdr(struct genlsk *genlsk)
-{
-	genlsk->cur = genlsk->buf;
-	struct nlmsghdr *nlh = (struct nlmsghdr *)genlsk->cur;
-	nlh->nlmsg_type = genlsk->faid;
-	nlh->nlmsg_flags = NLM_F_REQUEST;
-	nlh->nlmsg_seq = ++genl->seq;
-	nlh->nlmsg_pid = genl->pid;
-	genlsk->cur += NLMSG_HDRLEN;
-	update_nl_hdr_len(genlsk);
-}
-
-void put_genl_hdr(struct genlsk *genlsk, uint8_t cmd)
-{
-	struct genlmsghdr *genlh = (struct genlmsghdr *)genlsk->cur;
-	genlh->cmd = cmd;
-	genlh->version = 0x01;
-	genlsk->cur += GENL_HDRLEN;
-	update_nl_hdr_len(genlsk);
-}
-
-void add_nl_attr(struct genlsk *genlsk, uint16_t type, const char *data,
-		int len)
-{
-	struct nlattr *nla = (struct nlattr *)genlsk->cur;
-	nla->nla_len = NLA_HDRLEN + len;
-	nla->nla_type = type;
-	memcpy((char *)nla + NLA_HDRLEN, data, len);
-	genlsk->cur += NLA_ALIGN(nla->nla_len);
-	update_nl_hdr_len(genlsk);
-}
-
-void update_nl_hdr_len(struct genlsk *genlsk)
-{
-	struct nlmsghdr *nlh = (struct nlmsghdr *)genlsk->buf;
-	nlh->nlmsg_len = genlsk->cur - genlsk->buf;
-}
-
-int send_nl_cmd(struct genlsk *genlsk)
-{
-	struct nlmsghdr *nlh = (struct nlmsghdr *)genlsk->cur;
-	int len = nlh->nlmsg_len;
-	int off = 0;
-	while (off < len) {
-		ret = send(genlsk->fd, genlsk->buf + off, len - off, 0);
-		if (off < 0) {
-			fprintf(stderr, "%s\n", strerror(errno));
-			return -1;
-		}
-		off += ret;
-	}
-}
-
-int recv_nl_resp(struct genlsk *genlsk)
-{
-	int len = recv(genlsk->fd, genlsk->buf, sizeof genlsk->buf, 0);
-	if (len < 0) {
-		return -1;
-	}
-
-	struct nlmsghdr *nlh = (struct nlmsghdr *)genlsk->buf;
-	if (!NLMSG_OK(nlh, len)) {
-		return -1;
-	}
-	if (nlh->nlmsg_type == NLMSG_ERROR) {
-		return -1;
-	}
-
-	struct genlmsghdr *genlh = (struct genlmsghdr *)NLMSG_DATA(nlh);
-	if ()
-}
-
-int update_nl_faid(struct genlsk *genlsk)
-{
-}
-
-struct genlsk {
-	char buf[BUF_SIZE];
-	char *cur;
-	int fd;
-	uint16_t faid;
-	uint32_t seq;
-	uint32_t pid;
-}
-
-int get_nl_faid(int fd, unsigned int seq, unsigned int pid, const char *name)
-{
-	if (send_nl_attr(fd, GENL_ID_CTRL, seq, pid, CTRL_CMD_GETFAMILY,
-			CTRL_ATTR_FAMILY_NAME, "", 100) < 0) {
-		return -1;
-	}
-
-	char buf[BUF_SIZE];
-	struct nlmsghdr *nlh = (struct nlmsghdr *)buf;
-
-	struct nlattr *nla = (struct nlattr *)GENL_DATA(nlh);
-	nla = (struct nlattr *)((char *)nla + NLA_ALIGN(nla->nla_len));
-	if (nla->nla_type == CTRL_ATTR_FAMILY_ID) {
-		id = *(uint16_t *) NLA_DATA(na);
-	}
-	return id;
-}
-
-int add_kernel_route(struct genlsk *genlsk, uint32_t *network, uint8_t *mask,
-		uint8_t cnt)
+int add_kernel_route(struct genlsk *genlsk, uint32_t network, uint8_t mask)
 {
 	put_nl_hdr(genlsk);
 	put_genl_hdr(genlh, CMD_ADD_ROUTE);
-	put_genlipr_hdr(genliprh, 0, cnt);
-	for (int i = 0; i < cnt; i++) {
-		if (add_nl_attr(nla, ATTR_ROUTE, network, sizeof network) < 0) {
-			return -1;
-		}
-		if (add_nl_attr(nla, ATTR_ROUTE, mask, sizeof mask) < 0) {
-			return -1;
-		}
+	if (add_nl_attr(nla, ATTR_NETWORK, network, sizeof network) < 0) {
+		return -1;
+	}
+	if (add_nl_attr(nla, ATTR_MASK, mask, sizeof mask) < 0) {
+		return -1;
 	}
 
 	if (send_nl_cmd(genlsk) < 0) {
@@ -369,18 +196,38 @@ int add_kernel_route(struct genlsk *genlsk, uint32_t *network, uint8_t *mask,
 	if (recv_nl_resp(genlsk) < 0) {
 		return -1;
 	}
+
+	struct nlmsghdr *nlh = (struct nlmsghdr *)genlsk->buf;
+	struct genliprhdr *genliprh = (struct genliprhdr *)GENL_DATA(nlh);
+	int len = NLMSG_PAYLOAD(nlh, GENL_HDRLEN);
+	if (len < GENLIPR_HDRLEN) {
+		return -1;
+	}
+	if (genliprh->type != SUCCESS)
+		return -1;
+	return 0;
 }
 
-void test()
+int clear_all_kernel_route(struct genlsk *genlsk)
 {
-	char buf[4096];
+	put_nl_hdr(genlsk);
+	put_genl_hdr(genlh, CMD_CLEAR_ROUTE);
 
-	struct sockaddr_nl src;
-	memset(&src, 0, sizeof src);
-	src.nl_family = AF_NETLINK;
-	src.nl_pid = getpid();
+	if (send_nl_cmd(genlsk) < 0) {
+		return -1;
+	}
 
-	struct nlmsghdr *nh;
-	struct msghdr msgh;
+	if (recv_nl_resp(genlsk) < 0) {
+		return -1;
+	}
 
+	struct nlmsghdr *nlh = (struct nlmsghdr *)genlsk->buf;
+	struct genliprhdr *genliprh = (struct genliprhdr *)GENL_DATA(nlh);
+	int len = NLMSG_PAYLOAD(nlh, GENL_HDRLEN);
+	if (len < GENLIPR_HDRLEN) {
+		return -1;
+	}
+	if (genliprh->type != SUCCESS)
+		return -1;
+	return 0;
 }

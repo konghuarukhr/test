@@ -304,34 +304,55 @@ static struct netlink_kernel_cfg iproxy_nl_cfg = {
 	.input = iproxy_nl_input;
 };
 
-int import_route(struct sk_buff *skb, struct genl_info *info)
+int clear_route(struct sk_buff *skb, struct genl_info *info)
 {
 }
 
-enum {
-	IMPORT_ROUTE,
-};
+int add_route(struct sk_buff *skb, struct genl_info *info)
+{
+	struct nlattr *attr = info->attrs[IPR_S_ATTR_NETWORK];
+	if (attr) {
+		u32 network = nla_get_u32(attr);
+
+	}
+}
 
 enum {
-	XX
+	IPR_S_ATTR_NETWORK,
+	IPR_S_ATTR_MASK,
+	__IPR_S_ATTR_MAX,
 };
+#define IPR_S_ATTR_MAX (__IPR_S_ATTR_MAX - 1)
 
-static struct nla_policy iproxy_genl_policy[] = {
-	[IMPORT_ROUTE] = {},
+enum {
+	IPR_S_CMD_CLEAR_ROUTE,
+	IPR_S_CMD_ADD_ROUTE,
+	__IPR_S_CMD_MAX,
+};
+#define IPR_S_CMD_MAX (__IPR_S_CMD_MAX - 1)
+
+static struct nla_policy iproxy_genl_policy[IPR_S_ATTR_MAX + 1] = {
+	[IPR_S_ATTR_NETWORK] = {.type = NLA_U32},
+	[IPR_S_ATTR_MASK] = {.type = NLA_U8},
 }
 
 static const struct genl_ops iproxy_genl_ops[] = {
 	{
-		.cmd = IMPORT_ROUTE,
-		.doit = import_route,
+		.cmd = IPR_S_CMD_CLEAR_ROUTE,
+		.doit = clear_route,
+	},
+	{
+		.cmd = IPR_S_CMD_ADD_ROUTE,
+		.doit = add_route,
+		.policy = iproxy_genl_policy,
 	},
 }
 
 static struct genl_family iproxy_genl_family = {
 	.hdrsize = 0,
-	.name = "IPROXY",
+	.name = "IPROXY_SERVER",
 	.version = 0x01,
-	.maxattr = SMC_PNETID_MAX,
+	.maxattr = IPR_S_ATTR_MAX,
 	.netnsok = true,
 	.ops = iproxy_genl_ops,
 	.n_ops = ARRAY_SIZE(iproxy_genl_ops),
