@@ -137,7 +137,11 @@ static bool is_server_port(__be16 port)
 
 static bool need_server_decap(struct sk_buff *skb)
 {
-	struct iphdr *iph = ip_hdr(skb);
+	struct iphdr *iph;
+	struct udphdr *udph;
+	struct iprhdr *iprh;
+
+	iph = ip_hdr(skb);
 	if (!is_server_ip(iph->daddr))
 		return false;
 	if (iph->protocol != IPPROTO_UDP)
@@ -146,11 +150,11 @@ static bool need_server_decap(struct sk_buff *skb)
 	if (!pskb_may_pull_iprhdr(skb))
 		return false;
 
-	struct udphdr *udph = udp_hdr(skb);
+	udph = udp_hdr(skb);
 	if (!is_server_port(udph->dest))
 		return false;
 
-	struct iprhdr *iprh = ipr_hdr(skb);
+	iprh = ipr_hdr(skb);
 	if (!is_ipr_cs(iprh))
 		return false;
 
@@ -160,18 +164,25 @@ static bool need_server_decap(struct sk_buff *skb)
 static int do_server_decap(struct sk_buff *skb)
 {
 	int err;
+	int nhl;
+	struct iphdr *iph, *niph;
+	struct udphdr *udph;
+	struct iprhdr *iprh;
 	__be32 xvip;
-	int nhl = skb_network_header_len(skb);
-	struct iphdr *iph = ip_hdr(skb);
-	struct udphdr *udph = udp_hdr(skb);
-	struct iprhdr *iprh = ipr_hdr(skb);
+	__be16 user;
 
-	__be16 user = iprh->user;
+	nhl = skb_network_header_len(skb);
+
+	iph = ip_hdr(skb);
+	udph = udp_hdr(skb);
+	iprh = ipr_hdr(skb);
+
+	user = iprh->user;
 
 	err = xlate_table_lookup_vip(xlate_table, iph->saddr, udph->source,
 			user, &xvip);
 	if (err) {
-		LOG_ERROR("failed to find xlate vip: %d", err);
+		LOG_ERROR("failed to lookup xlate vip: %d", err);
 		return err;
 	}
 
@@ -180,7 +191,7 @@ static int do_server_decap(struct sk_buff *skb)
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
 	//iph->check = ;
 
-	void *niph = __skb_pull(skb, CAPL);
+	niph = (struct iphdr *)__skb_pull(skb, CAPL);
 	memmove(niph, iph, nhl);
 	skb_reset_network_header(skb);
 	skb_set_transport_header(skb, nhl);
@@ -194,11 +205,12 @@ static int do_server_decap(struct sk_buff *skb)
 
 static bool need_server_encap(struct sk_buff *skb)
 {
-	int err;
-	struct iphdr *iph = ip_hdr(skb);
-	err = xlate_table_find_ipport(xlate_table, iph->daddr, NULL, NULL,
-			NULL);
-	if (err)
+	struct iphdr *iph;
+	__u32 ip;
+
+	iph = ip_hdr(skb);
+	ip = ntohl(iph->daddr);
+	if (ip < _vip_start || ip >= _vip_start + vip_number)
 		return false;
 
 	return true;
@@ -207,37 +219,45 @@ static bool need_server_encap(struct sk_buff *skb)
 static int do_server_encap(struct sk_buff *skb)
 {
 	int err;
+	int nhl;
 	__be32 xip;
 	__be16 xport;
 	__be16 xuser;
+	struct iphdr *iph, *niph;
+	struct udphdr *udph;
+	struct iprhdr *iprh;
 
-	if ((err = skb_cow(skb, CAPL)))
-		return err;
-
-	int nhl = skb_network_header_len(skb);
-
-	__skb_pull(skb, nhl);
-	masq_data(skb, get_passwd(xuser));
-
-	struct iphdr *iph = ip_hdr(skb);
-	struct iphdr *niph = (struct iphdr *)__skb_push(skb, nhl + CAPL);
-	memmove(niph, iph, nhl);
-	skb_reset_network_header(skb);
-	skb_set_transport_header(skb, nhl);
-
-	err = xlate_table_find_ipport(xlate_table, niph->daddr, &xip, &xport,
+	iph = ip_hdr(skb);
+	err = xlate_table_find_ipport(xlate_table, iph->daddr, &xip, &xport,
 			&xuser);
 	if (err) {
 		LOG_ERROR("failed to find xlate ipport: %d", err);
 		return err;
 	}
 
-	struct iprhdr *iprh = ipr_hdr(skb);
+	err = skb_cow(skb, CAPL);
+	if (err) {
+		LOG_ERROR("failed to do skb_cow: %d", err);
+		return err;
+	}
+
+	nhl = skb_network_header_len(skb);
+
+	__skb_pull(skb, nhl);
+	masq_data(skb, get_passwd(xuser));
+
+	iph = ip_hdr(skb);
+	niph = (struct iphdr *)__skb_push(skb, nhl + CAPL);
+	memmove(niph, iph, nhl);
+	skb_reset_network_header(skb);
+	skb_set_transport_header(skb, nhl);
+
+	iprh = ipr_hdr(skb);
 	iprh->type = IPR_S_C;
 	iprh->user = xuser;
 	iprh->ip = niph->saddr;
 
-	struct udphdr *udph = udp_hdr(skb);
+	udph = udp_hdr(skb);
 	udph->source = get_server_port();
 	udph->dest = xport;
 	udph->len = htons(ntohs(niph->tot_len) + CAPL - nhl);
@@ -298,12 +318,12 @@ static void iproxy_nl_input(struct sk_buff *skb)
 	u8 *data = NULL;
 	nlh = nlmsg_hdr(skb);
 
-	while ((skb = skb_dequeue(&sk->receive_queue)) 
+	while ((skb = skb_dequeue(&sk->receive_queue))
 			!= NULL) {
 		/* process netlink message pointed by skb->data */
 		nlh = (struct nlmsghdr *)skb->data;
 		data = NLMSG_DATA(nlh);
-		/* process netlink message with header pointed by 
+		/* process netlink message with header pointed by
 		 * nlh and data pointed by data
 		 */
 	}
@@ -327,7 +347,7 @@ enum {
 
 int clear_route(struct sk_buff *skb, struct genl_info *info)
 {
-        return 0;
+	return 0;
 }
 
 int add_route(struct sk_buff *skb, struct genl_info *info)
@@ -336,10 +356,10 @@ int add_route(struct sk_buff *skb, struct genl_info *info)
 	struct nlattr *attr = info->attrs[IPR_S_ATTR_NETWORK];
 	if (attr) {
 		u32 network = nla_get_u32(attr);
-                return network;
+		return network;
 	}
 	*/
-        return 0;
+	return 0;
 }
 
 

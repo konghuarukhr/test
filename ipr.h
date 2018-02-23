@@ -3,9 +3,9 @@
 
 struct iprhdr {
 	__u8 type;
-	__u8 reserve0;
+	__u8 reserve;
 	__be16 user;
-	__u32 addr;
+	__u32 ip;
 };
 
 #define CAPL (sizeof(struct udphdr) + sizeof(struct iprhdr))

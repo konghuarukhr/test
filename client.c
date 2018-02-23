@@ -25,7 +25,7 @@ static unsigned char dns_policy = 0;
 module_param(dns_policy, byte, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(dns_policy, "0: proxy all; 1: not proxy private ip; 2: no special");
 enum {
-        DNS_UNSPEC,
+	DNS_UNSPEC,
 	DNS_ALL,
 	DNS_PUBLIC,
 	DNS_NO_SPECIAL,
@@ -35,7 +35,7 @@ static unsigned char route_policy = 0;
 module_param(route_policy, byte, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(route_policy, "0: get route from server; 1: route all traffic");
 enum {
-        ROUTE_UNSPEC,
+	ROUTE_UNSPEC,
 	ROUTE_LEARN,
 	ROUTE_ALL,
 };
@@ -73,72 +73,72 @@ static inline __be16 get_server_port(void)
 	return _port;
 }
 
-static inline __be16 get_iproxy_user(void)
+static inline __be16 my_get_user(void)
 {
-        return _user;
+	return _user;
 }
 
-static inline unsigned char get_iproxy_passwd(void)
+static inline unsigned char get_passwd(void)
 {
 	return passwd;
 }
 
 static inline bool is_dns_all(void)
 {
-        return dns_policy == DNS_ALL;
+	return dns_policy == DNS_ALL;
 }
 
 static inline bool is_dns_public(void)
 {
-        return dns_policy == DNS_PUBLIC;
+	return dns_policy == DNS_PUBLIC;
 }
 
 static inline bool is_dns_no_special(void)
 {
-        return dns_policy == DNS_NO_SPECIAL;
+	return dns_policy == DNS_NO_SPECIAL;
 }
 
 static inline bool is_route_learn(void)
 {
-        return route_policy == ROUTE_LEARN;
+	return route_policy == ROUTE_LEARN;
 }
 
 static inline bool is_route_all(void)
 {
-        return route_policy == ROUTE_ALL;
+	return route_policy == ROUTE_ALL;
 }
 
 
 static int params_init(void)
 {
 	if (server_ip != NULL)
-                _server_ip = in_aton(server_ip);
-        if (!_server_ip) {
+		_server_ip = in_aton(server_ip);
+	if (!_server_ip) {
 		LOG_ERROR("server_ip param error");
-                return -EINVAL;
-        }
+		return -EINVAL;
+	}
 	_port = htons(port);
-        if (!_port) {
+	if (!_port) {
 		LOG_ERROR("port param error");
-                return -EINVAL;
-        }
-        _user = htons(user);
-        if (!_user) {
+		return -EINVAL;
+	}
+	_user = htons(user);
+	if (!_user) {
 		LOG_ERROR("user param error");
-                return -EINVAL;
-        }
-        if (passwd) {
+		return -EINVAL;
+	}
+	if (passwd) {
 		LOG_ERROR("passwd param error");
-                return -EINVAL;
-        }
-        if (dns_policy) {
+		return -EINVAL;
+	}
+	if (dns_policy) {
 		LOG_ERROR("dns_policy param error");
-                return -EINVAL;
-        }
-        if (route_policy) {
+		return -EINVAL;
+	}
+	if (route_policy) {
 		LOG_ERROR("route_policy param error");
-                return -EINVAL;
-        }
+		return -EINVAL;
+	}
 
 	return 0;
 }
@@ -149,35 +149,35 @@ static void params_uninit(void)
 
 static int custom_init(void)
 {
-        int err;
+	int err;
 
-        err = params_init();
-        if (err) {
-                LOG_ERROR("failed to init params: %d", err);
-                goto params_init_err;
-        }
+	err = params_init();
+	if (err) {
+		LOG_ERROR("failed to init params: %d", err);
+		goto params_init_err;
+	}
 
-        route_table = route_table_init();
-        if (!route_table) {
-                err = -ENOMEM;
-                LOG_ERROR("failed to init route table: %d", err);
-                goto route_table_init_err;
-        }
+	route_table = route_table_init();
+	if (!route_table) {
+		err = -ENOMEM;
+		LOG_ERROR("failed to init route table: %d", err);
+		goto route_table_init_err;
+	}
 
-        return 0;
+	return 0;
 
 route_table_init_err:
-        params_uninit();
+	params_uninit();
 
 params_init_err:
 
-        return err;
+	return err;
 }
 
 static void custom_uninit(void)
 {
-        route_table_uninit(route_table);
-        params_uninit();
+	route_table_uninit(route_table);
+	params_uninit();
 }
 
 static inline bool is_dns_port(const struct udphdr *udph)
@@ -232,12 +232,14 @@ static bool is_private_ip(__be32 ip)
 
 static bool is_noproxy_ip(__be32 ip)
 {
-        return route_table_find(route_table, ip);
+	return route_table_contains(route_table, ip);
 }
 
 static bool need_client_encap(struct sk_buff *skb)
 {
-	struct iphdr *iph = ip_hdr(skb);
+	struct iphdr *iph;
+
+	iph = ip_hdr(skb);
 
 	if (is_server_ip(iph->daddr))
 		return false;
@@ -262,22 +264,24 @@ static bool need_client_encap(struct sk_buff *skb)
 static int do_client_encap(struct sk_buff *skb)
 {
 	int err;
-        struct iphdr *iph, *niph;
+	struct iphdr *iph, *niph;
 	struct udphdr *udph;
 	struct iprhdr *iprh;
-        int nhl;
+	int nhl;
+
+
+	err = skb_cow(skb, CAPL);
+	if (err) {
+		LOG_ERROR("failed to do skb_cow: %d", err);
+		return err;
+	}
 
 	nhl = skb_network_header_len(skb);
 
-        err = skb_cow(skb, CAPL);
-	if (err)
-		return err;
+	__skb_pull(skb, nhl);
+	masq_data(skb, get_passwd());
 
 	iph = ip_hdr(skb);
-
-	__skb_pull(skb, nhl);
-	masq_data_pw(skb, get_iproxy_passwd());
-
 	niph = (struct iphdr *)__skb_push(skb, nhl + CAPL);
 	memmove(niph, iph, nhl);
 	skb_reset_network_header(skb);
@@ -285,7 +289,7 @@ static int do_client_encap(struct sk_buff *skb)
 
 	iprh = ipr_hdr(skb);
 	iprh->type = IPR_C_S;
-	iprh->user = get_iproxy_user();
+	iprh->user = my_get_user();
 	iprh->ip = niph->daddr;
 
 	udph = udp_hdr(skb);
@@ -328,7 +332,8 @@ static bool need_client_decap(struct sk_buff *skb) {
 	return true;
 }
 
-static unsigned int do_client_decap(struct sk_buff *skb) {
+static unsigned int do_client_decap(struct sk_buff *skb)
+{
 	int nhl;
 	struct iphdr *iph, *niph;
 	struct iprhdr *iprh;
@@ -337,6 +342,7 @@ static unsigned int do_client_decap(struct sk_buff *skb) {
 
 	iph = ip_hdr(skb);
 	iprh = ipr_hdr(skb);
+
 	iph->saddr = iprh->ip;
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
 	//iph->check = ;
@@ -347,7 +353,7 @@ static unsigned int do_client_decap(struct sk_buff *skb) {
 	skb_set_transport_header(skb, nhl);
 
 	__skb_pull(skb, nhl);
-	demasq_data_pw(skb, get_iproxy_passwd());
+	demasq_data(skb, get_passwd());
 	__skb_push(skb, nhl);
 
 	return 0;
@@ -420,8 +426,8 @@ static struct nla_policy iproxy_genl_policy[IPRCA_MAX + 1] = {
 
 int clear_route(struct sk_buff *skb, struct genl_info *info)
 {
-        route_table_clear(route_table);
-        return 0;
+	route_table_clear(route_table);
+	return 0;
 }
 
 int add_route(struct sk_buff *skb, struct genl_info *info)
@@ -431,15 +437,15 @@ int add_route(struct sk_buff *skb, struct genl_info *info)
 	if (network_attr && mask_attr) {
 		__be32 network = nla_get_be32(network_attr);
 		u8 mask = nla_get_u8(mask_attr);
-                route_table_add(route_table, network, mask);
-                return 0;
+		route_table_add(route_table, network, mask);
+		return 0;
 	}
-        return -ENOTSUPP;
+	return -ENOTSUPP;
 }
 
 int show_route(struct sk_buff *skb, struct genl_info *info)
 {
-        return -ENOTSUPP;
+	return -ENOTSUPP;
 }
 
 static const struct genl_ops iproxy_genl_ops[] = {
