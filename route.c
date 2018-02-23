@@ -1,145 +1,150 @@
-#define ROUTE_HT_BITS 10
-#define ROUTE_TBL_SIZE 25 // mask: 8-32
+#include "route.h"
+#include "common.h"
 
-struct route_ent {
+#define ROUTE_BUCKET_BITS 10
+#define ROUTE_BUCKET_NR 25 // mask: 8-32
+
+struct route_bucket {
+	DECLARE_HASHTABLE(head, ROUTE_BUCKET_BITS);
+	int size;
+	spinlock_t lock;
+	__be32 mask;
+};
+
+struct route_entry {
+	struct route_bucket *rb;
 	__be32 network;
 	struct timer_list timer;
 	struct hlist_node node;
+	struct rcu_head rcu;
 };
 
-struct route_tbl {
-	DECLARE_HASHTABLE(head, ROUTE_HT_BITS);
-	__be32 mask;
-	int size;
+struct route_table {
+	struct route_bucket buckets[ROUTE_BUCKET_NR];
 };
 
-struct route_tbl route_tbl[ROUTE_TBL_SIZE];
-
-void route_tbl_init(void)
+struct route_table *route_table_init(void)
 {
-	for (int i = 0; i < ROUTE_TBL_SIZE; i++) {
-		struct route_tbl *rt = &route_tbl[i];
-		hash_init(rt->head);
-		rt->mask = htonl(-(1 << i));
-		rt->size = 0;
-	}
-}
-
-struct route_ent *route_tbl_add(__be32 network, unsigned char mask)
-{
-	struct route_ent *re = kmalloc(sizeof *re, GFP_KERNEL);
-	if (!re)
+	int i;
+	struct route_table *rt;
+	
+	rt = kzalloc(sizeof *rt, GFP_KERNEL);
+	if (!rt) {
+		LOG_ERROR("failed to alloc route table");
 		return NULL;
-	re->network = network;
-	init_timer(&re->timer);
-
-	struct route_tbl *rt = &route_tbl[32 - mask];
-	hash_add(rt->head, &re->node, re->network);
-	rt->size++;
-	return re;
-}
-
-void route_ent_release(struct route_ent *re)
-{
-	__hlist_del(re->node);
-	kfree(re);
-}
-
-void route_ent_expire(unsigned long data)
-{
-	struct route_ent *re = (struct route_ent *)data;
-	__hlist_del(re->node);
-	kfree(re);
-}
-
-bool route_tbl_add_expire(__be32 network, unsigned char mask, int secs)
-{
-	struct route_ent *re = kmalloc(sizeof *re, GFP_KERNEL);
-	if (!re)
-		return NULL;
-	re->network = network;
-	init_timer(&re->timer);
-	re->timer.expires = jiffies + secs * HZ;
-	re->timer.function = route_ent_expire;
-	re->timer.data = re;
-
-	struct route_tbl *rt = &route_tbl[32 - mask];
-	hash_add(rt->head, &re->node, re->network);
-	rt->size++;
-	return re;
-}
-
-
-void route_tbl_init(__be32 *network, int *mask, int size)
-{
-	for (int i = 0; i < ROUTE_TBL_SIZE; i++) {
-		struct route_tbl *rt = &route_tbl[i];
-		rt->mask = htonl(-(2 << i));
-		rt->size = 0;
 	}
 
-	for (int i = 0; i < size; i++) {
-		struct route_tbl *rt = &route_tbl[32 - mask[i]];
-		struct route_ent *re = kmalloc(sizeof *re, GFP_KERNEL);
-		re->network = network[i];
-		hash_add(rt->route_ent, &re->node, re->network);
-		rt->size++;
+	for (i = 0; i < ARRAY_SIZE(rt->buckets); i++) {
+		struct route_bucket *rb;
+
+		rb = rt->buckets + i;
+		hash_init(rb->head);
+		rb->size = 0;
+		spin_lock_init(&rb->lock);
+		rb->mask = htonl(-(1 << i));
 	}
+
+	return rt;
 }
 
-void route_tbl_uninit(void)
+static void route_entry_release(struct route_entry *re)
 {
-	for (int i = 0; i < ROUTE_TBL_SIZE; i++) {
-		struct route_tbl *rt = &route_tbl[i];
-		struct hlist_node *p, *n;
-		hlist_for_each_safe(p, n, &rt->route_ent) {
-			__hlist_del(p);
-			struct route_ent *re = hlist_entry(p,
-					struct route_ent, node);
-			kfree(re);
+	del_timer(&re->timer);
+	hash_del_rcu(&re->node);
+	re->rb->size--;
+	kfree_rcu(re, rcu);
+}
+
+void route_table_clear(struct route_table *rt)
+{
+	int i;
+
+	for (i = 0; i < ROUTE_BUCKET_NR; i++) {
+		struct route_bucket *rb;
+		int bkt;
+		struct hlist_node *tmp;
+		struct route_entry *re;
+
+	       	rb = rt->buckets + i;
+
+		spin_lock_bh(&rb->lock);
+		hash_for_each_safe(rb->head, bkt, tmp, re, node) {
+			route_entry_release(re);
 		}
-		rt->size = 0;
+		spin_unlock_bh(&rb->lock);
 	}
 }
 
-struct route_ent *lookup_route_ent(__be32 ip)
+void route_table_uninit(struct route_table *rt)
 {
-	for (int i = 0; i < ROUTE_TBL_SIZE; i++) {
-		if (route_tbl[i].size == 0)
+	route_table_clear(rt);
+	kfree(rt);
+}
+
+static void route_entry_timer_cb(unsigned long data)
+{
+	struct route_entry *re;
+
+	re = (struct route_entry *)data;
+	spin_lock(&re->rb->lock);
+	route_entry_release(re);
+	spin_unlock(&re->rb->lock);
+}
+
+int route_table_add_expire(struct route_table *rt, __be32 network,
+		unsigned char mask, int secs)
+{
+	struct route_entry *re;
+	struct route_bucket *rb;
+
+	re = kzalloc(sizeof *re, GFP_ATOMIC);
+	if (!re) {
+		LOG_ERROR("failed to alloc route entry");
+		return -ENOMEM;
+	}
+
+	re->rb = rt->buckets + (32 - mask);
+	re->network = network;
+	setup_timer(&re->timer, route_entry_timer_cb, (unsigned long)re);
+
+	rb = re->rb;
+	spin_lock_bh(&rb->lock);
+	rb->size++;
+	hash_add_rcu(rb->head, &re->node, re->network);
+	if (!secs)
+		mod_timer(&re->timer, jiffies + secs * HZ);
+	spin_unlock_bh(&rb->lock);
+
+	return 0;
+}
+
+int route_table_add(struct route_table *rt, __be32 network,
+		unsigned char mask)
+{
+	return route_table_add_expire(rt, network, mask, 0);
+}
+
+bool route_table_contains(struct route_table *rt, __be32 ip)
+{
+	int i;
+
+	for (i = 0; i < ROUTE_BUCKET_NR; i++) {
+		struct route_bucket *rb;
+		struct route_entry *re;
+		__be32 key;
+
+		rb = rt->buckets + i;
+		if (rb->size == 0)
 			continue;
-		__be32 key = ip & mask;
-		struct route_ent *re;
-		hash_for_each_possible(route_tbl[i].route_ent, re, node, key)
-			if (re->network == key)
-				return re;
+
+		key = ip & rb->mask;
+		rcu_read_lock();
+		hash_for_each_possible_rcu(rb->head, re, node, key)
+			if (re->network == key) {
+				rcu_read_unlock();
+				return true;
+			}
+		rcu_read_unlock();
 	}
-}
-
-static DEFINE_MUTEX(ipr_rcv_mutex);
-
-static int nl_ipr_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh,
-		struct netlink_ext_ack *extack)
-{
-}
-
-static void nl_ipr_rcv(struct sk_buff *skb)
-{
-	mutex_lock(&ipr_rcv_mutex);
-	netlink_rcv_skb(skb, nl_ipr_rcv_msg);
-	mutex_unlock(&ipr_rcv_mutex);
-}
-
-static struct pernet_operations iproxy_net_ops = {
-	.init = net_init;
-	.exit = net_exit;
-};
-
-static net_init(struct net *net)
-{
-	struct netlink_kernel_cfg cfg = {
-		.input  = nl_rcv,
-	};
-	struct sock *sk = netlink_kernel_create(net, NETLINK_NETFILTER, &cfg);
-	if (!sk) {
-	}
+	return false;
 }

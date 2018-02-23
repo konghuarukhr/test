@@ -1,5 +1,9 @@
 #include "common.h"
 
+#define VIP_EXPIRE 600
+
+struct xlate_table *xlate_table = NULL;
+
 static char *server_ip = NULL;
 module_param(server_ip, charp, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(server_ip, "server ip");
@@ -10,21 +14,26 @@ module_param(server_port, ushort, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(server_port, "server port (UDP)");
 static __be16 _server_port = 0;
 
-static char *client_ip_start = NULL;
-module_param(client_ip_start, charp, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(client_ip_start, "fake client ip start from");
-static u32 _client_ip_start = 0;
+static char *vip_start = NULL;
+module_param(vip_start, charp, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(vip_start, "virtual client ip start from (10.0.0.0)");
+static __u32 _vip_start = 0;
 
-static unsigned int client_ip_number = 0;
-module_param(client_ip_number, uint, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(client_ip_number, "fake client ip total number");
+static unsigned int vip_number = 0;
+module_param(vip_number, uint, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(vip_number, "virtual client ip total number (1024)");
 
 static char *dns_ip = NULL;
 module_param(dns_ip, charp, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(dns_ip, "dns ip");
 static __be32 _dns_ip = 0;
 
-static int param_init(void)
+static unsigned char get_passwd(__be16 user)
+{
+	return 0;
+}
+
+static int params_init(void)
 {
 	if (server_ip != NULL)
 		_server_ip = in_aton(server_ip);
@@ -40,15 +49,15 @@ static int param_init(void)
 		return -EINVAL;
 	}
 
-	if (client_ip_start != NULL)
-		_client_ip_start = ntohl(in_aton(client_ip_start));
-	if (_client_ip_start == 0) {
-		LOG_ERROR("client_ip_start param error");
+	if (vip_start != NULL)
+		_vip_start = ntohl(in_aton(vip_start));
+	if (_vip_start == 0) {
+		LOG_ERROR("vip_start param error");
 		return -EINVAL;
 	}
 
-	if (client_ip_number == 0) {
-		LOG_ERROR("client_ip_number param error");
+	if (!vip_number) {
+		LOG_ERROR("vip_number param error");
 		return -EINVAL;
 	}
 
@@ -62,6 +71,41 @@ static int param_init(void)
 	return 0;
 }
 
+static void params_uninit(void)
+{
+}
+
+struct route_table *route_table;
+static int custom_init(void)
+{
+	int err;
+
+	err = params_init();
+	if (err) {
+		LOG_ERROR("failed to init input params: %d", err);
+		return err;
+	}
+
+	route_table = route_table_init();
+	if (!route_table) {
+		LOG_ERROR("failed to init route table");
+		return -ENOMEM;
+	}
+
+	xlate_table = xlate_table_init(_vip_start, vip_number, VIP_EXPIRE);
+	if (!xlate_table) {
+		LOG_ERROR("failed to init xlate table");
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+static void custom_uninit(void)
+{
+	params_uninit();
+}
+
 static inline __be32 get_server_ip(void)
 {
 	return _server_ip;
@@ -72,73 +116,24 @@ static inline __be16 get_server_port(void)
 	return _server_port;
 }
 
-static DECLARE_BITMAP(client_ip_used_map, client_ip_number);
-static client_ip_unused_idx = 0;
-
-__be32 apply_ip(void)
-{
-	client_ip_unused_idx = find_next_zero_bit(client_ip_used_map,
-			client_ip_number, client_ip_unused_idx);
-	if (client_ip_unused_idx == client_ip_number) {
-		return 0;
-	}
-	set_bit(client_ip_unused_idx, client_ip_used_map);
-	client_ip_unused_idx++;
-	return htonl(_client_ip_start + client_ip_unused_idx);
-}
-
-void release_ip(__be32 ip)
-{
-	client_ip_unused_idx = ntohl(ip) - _client_ip_start;
-	clear_bit(client_ip_unused_idx, client_ip_used_map);
-}
-
 static inline __be32 get_dns_ip(void)
 {
 	return _dns_ip;
 }
 
-struct xlate_entry {
-	__be32 saddr;
-	__be16 source;
-	__be16 user;
-	__be32 daddr;
-	struct hlist_node fnode;
-	struct hlist_node bnode;
-};
-static struct forward_xlate_htbl;
-static struct backward_xlate_htbl;
 
-struct xlate_entry *lookup_xlate_entry(__be32 saddr, __be16 source,
-		__be16 user, )
+/**
+ * TODO: supports multi proxies
+ */
+static bool is_server_ip(__be32 ip)
 {
-	struct xlate_entry *xe;
-	__be64 key = ((__be64)source << 32) + saddr;
-	hash_for_each_possible(forward_xlate_htbl, xe, fnode, key)
-		if (xe->saddr == saddr && xe->source == source)
-			return xe;
-	xe = kmalloc(sizeof *xe, GFP_KERNEL);
-	if (xe == NULL) {
-		LOG_ERROR("failed to alloc xlate entry memory");
-		return -ENOMEM;
-	}
-	xe->saddr = saddr;
-	xe->source = source;
-	xe->user = user;
-	xe->daddr = release;
-	if (xe->daddr == 0) {
-		LOG_ERROR("failed to alloc xlate entry memory");
-		kfree(xe);
-		return -ENOENT;
-	}
-
-	hash_add(forward_xlate_htbl, &xe->fnode, key);
-	hash_add(backward_xlate_htbl, &xe->bnode, key);
+	return ip == _server_ip;
 }
 
-
-
-
+static bool is_server_port(__be16 port)
+{
+	return port == _server_port;
+}
 
 static bool need_server_decap(struct sk_buff *skb)
 {
@@ -156,7 +151,7 @@ static bool need_server_decap(struct sk_buff *skb)
 		return false;
 
 	struct iprhdr *iprh = ipr_hdr(skb);
-	if (!is_client_to_server(iprh))
+	if (!is_ipr_cs(iprh))
 		return false;
 
 	return true;
@@ -164,6 +159,8 @@ static bool need_server_decap(struct sk_buff *skb)
 
 static int do_server_decap(struct sk_buff *skb)
 {
+	int err;
+	__be32 xvip;
 	int nhl = skb_network_header_len(skb);
 	struct iphdr *iph = ip_hdr(skb);
 	struct udphdr *udph = udp_hdr(skb);
@@ -171,15 +168,15 @@ static int do_server_decap(struct sk_buff *skb)
 
 	__be16 user = iprh->user;
 
-	struct xlate_entry *xe = lookup_xlate_entry(iph->saddr, udph->source,
-			user);
-	if (xe == NULL) {
-		LOG_ERROR("failed to lookup xlate entry");
-		return -ENOENT;
+	err = xlate_table_lookup_vip(xlate_table, iph->saddr, udph->source,
+			user, &xvip);
+	if (err) {
+		LOG_ERROR("failed to find xlate vip: %d", err);
+		return err;
 	}
 
-	iph->saddr = xe->daddr;
-	iph->daddr = iprh->daddr;
+	iph->saddr = xvip;
+	iph->daddr = iprh->ip;
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
 	//iph->check = ;
 
@@ -197,9 +194,11 @@ static int do_server_decap(struct sk_buff *skb)
 
 static bool need_server_encap(struct sk_buff *skb)
 {
+	int err;
 	struct iphdr *iph = ip_hdr(skb);
-	struct xlate_entry *xe = get_xlate_entry(iph->daddr);
-	if (xe == NULL)
+	err = xlate_table_find_ipport(xlate_table, iph->daddr, NULL, NULL,
+			NULL);
+	if (err)
 		return false;
 
 	return true;
@@ -208,36 +207,44 @@ static bool need_server_encap(struct sk_buff *skb)
 static int do_server_encap(struct sk_buff *skb)
 {
 	int err;
+	__be32 xip;
+	__be16 xport;
+	__be16 xuser;
 
-	if (err = skb_cow(skb, CAPL))
+	if ((err = skb_cow(skb, CAPL)))
 		return err;
 
 	int nhl = skb_network_header_len(skb);
 
 	__skb_pull(skb, nhl);
-	masq_data(skb);
+	masq_data(skb, get_passwd(xuser));
 
 	struct iphdr *iph = ip_hdr(skb);
-	void *niph = __skb_push(skb, nhl + CAPL);
+	struct iphdr *niph = (struct iphdr *)__skb_push(skb, nhl + CAPL);
 	memmove(niph, iph, nhl);
 	skb_reset_network_header(skb);
 	skb_set_transport_header(skb, nhl);
 
-	struct xlate_entry *xe = get_xlate_entry(niph->daddr);
+	err = xlate_table_find_ipport(xlate_table, niph->daddr, &xip, &xport,
+			&xuser);
+	if (err) {
+		LOG_ERROR("failed to find xlate ipport: %d", err);
+		return err;
+	}
 
 	struct iprhdr *iprh = ipr_hdr(skb);
 	iprh->type = IPR_S_C;
-	iprh->user = xe->user;
-	iprh->addr = niph->saddr;
+	iprh->user = xuser;
+	iprh->ip = niph->saddr;
 
 	struct udphdr *udph = udp_hdr(skb);
 	udph->source = get_server_port();
-	udph->dest = xe->sport;
+	udph->dest = xport;
 	udph->len = htons(ntohs(niph->tot_len) + CAPL - nhl);
 	udph->check = 0;
 
 	niph->saddr = get_server_ip();
-	niph->daddr = xe->sip;
+	niph->daddr = xip;
 	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);
 	//niph->check = ;
 
@@ -283,6 +290,7 @@ static const struct nf_hook_ops iproxy_nf_ops[] = {
 	},
 };
 
+#if 0
 static void iproxy_nl_input(struct sk_buff *skb)
 {
 	struct sk_buff *skb;
@@ -298,26 +306,12 @@ static void iproxy_nl_input(struct sk_buff *skb)
 		/* process netlink message with header pointed by 
 		 * nlh and data pointed by data
 		 */
-}
-
-static struct netlink_kernel_cfg iproxy_nl_cfg = {
-	.input = iproxy_nl_input;
-};
-
-int clear_route(struct sk_buff *skb, struct genl_info *info)
-{
-}
-
-int add_route(struct sk_buff *skb, struct genl_info *info)
-{
-	struct nlattr *attr = info->attrs[IPR_S_ATTR_NETWORK];
-	if (attr) {
-		u32 network = nla_get_u32(attr);
-
 	}
 }
+#endif
 
 enum {
+	IPR_S_ATTR_UNSPEC,
 	IPR_S_ATTR_NETWORK,
 	IPR_S_ATTR_MASK,
 	__IPR_S_ATTR_MAX,
@@ -331,10 +325,28 @@ enum {
 };
 #define IPR_S_CMD_MAX (__IPR_S_CMD_MAX - 1)
 
+int clear_route(struct sk_buff *skb, struct genl_info *info)
+{
+        return 0;
+}
+
+int add_route(struct sk_buff *skb, struct genl_info *info)
+{
+	/*
+	struct nlattr *attr = info->attrs[IPR_S_ATTR_NETWORK];
+	if (attr) {
+		u32 network = nla_get_u32(attr);
+                return network;
+	}
+	*/
+        return 0;
+}
+
+
 static struct nla_policy iproxy_genl_policy[IPR_S_ATTR_MAX + 1] = {
 	[IPR_S_ATTR_NETWORK] = {.type = NLA_U32},
 	[IPR_S_ATTR_MASK] = {.type = NLA_U8},
-}
+};
 
 static const struct genl_ops iproxy_genl_ops[] = {
 	{
@@ -346,7 +358,7 @@ static const struct genl_ops iproxy_genl_ops[] = {
 		.doit = add_route,
 		.policy = iproxy_genl_policy,
 	},
-}
+};
 
 static struct genl_family iproxy_genl_family = {
 	.hdrsize = 0,

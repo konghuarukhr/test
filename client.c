@@ -1,19 +1,21 @@
 #include "common.h"
 
+struct route_table *route_table = NULL;
+
 static char *server_ip = NULL;
 module_param(server_ip, charp, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(server_ip, "server ip");
 static __be32 _server_ip = 0;
 
-static unsigned short server_port = 0;
-module_param(server_port, ushort, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(server_port, "server port (UDP)");
-static __be16 _server_port = 0;
+static unsigned short port = 0;
+module_param(port, ushort, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(port, "client & server port (UDP)");
+static __be16 _port = 0;
 
-static unsigned short client_port = 0;
-module_param(client_port, ushort, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(client_port, "source udp port");
-static __be16 _client_port = 0;
+static unsigned short user = 0;
+module_param(user, ushort, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(user, "user");
+static __be16 _user = 0;
 
 static unsigned char passwd = 0;
 module_param(passwd, byte, 0);
@@ -23,6 +25,7 @@ static unsigned char dns_policy = 0;
 module_param(dns_policy, byte, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(dns_policy, "0: proxy all; 1: not proxy private ip; 2: no special");
 enum {
+        DNS_UNSPEC,
 	DNS_ALL,
 	DNS_PUBLIC,
 	DNS_NO_SPECIAL,
@@ -30,94 +33,206 @@ enum {
 
 static unsigned char route_policy = 0;
 module_param(route_policy, byte, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(route_policy, "0: get route from server; 1: ignore route from server");
+MODULE_PARM_DESC(route_policy, "0: get route from server; 1: route all traffic");
 enum {
-	ROUTE_SERVER,
+        ROUTE_UNSPEC,
+	ROUTE_LEARN,
 	ROUTE_ALL,
-}
+};
 
-static int param_init(void)
+/**
+ * TODO: supports multi proxies
+ */
+static inline bool is_server_ip(__be32 ip)
 {
-	_client_port = htons(client_port);
-	if (server_ip == NULL) {
-		return -EINVAL;
-	}
-	_server_ip = in_aton(server_ip);
-	_server_port = htons(server_port);
-	return 0;
+	return ip == _server_ip;
 }
 
-static __be32 get_server_ip(void)
+static inline __be32 get_server_ip(void)
 {
 	return _server_ip;
 }
 
-static __be16 get_server_port(void)
+static inline bool is_client_port(__be16 port)
 {
-	return _server_port;
+	return port == _port;
 }
 
-static __be16 get_client_port(void)
+static inline __be16 get_client_port(void)
 {
-	return _client_port;
+	return _port;
 }
 
-static unsigned char get_passwd(void)
+static inline bool is_server_port(__be16 port)
+{
+	return port == _port;
+}
+
+static inline __be16 get_server_port(void)
+{
+	return _port;
+}
+
+static inline __be16 get_iproxy_user(void)
+{
+        return _user;
+}
+
+static inline unsigned char get_iproxy_passwd(void)
 {
 	return passwd;
 }
 
+static inline bool is_dns_all(void)
+{
+        return dns_policy == DNS_ALL;
+}
 
-static bool dport_is_dns_port(const struct udphdr *udph)
+static inline bool is_dns_public(void)
+{
+        return dns_policy == DNS_PUBLIC;
+}
+
+static inline bool is_dns_no_special(void)
+{
+        return dns_policy == DNS_NO_SPECIAL;
+}
+
+static inline bool is_route_learn(void)
+{
+        return route_policy == ROUTE_LEARN;
+}
+
+static inline bool is_route_all(void)
+{
+        return route_policy == ROUTE_ALL;
+}
+
+
+static int params_init(void)
+{
+	if (server_ip != NULL)
+                _server_ip = in_aton(server_ip);
+        if (!_server_ip) {
+		LOG_ERROR("server_ip param error");
+                return -EINVAL;
+        }
+	_port = htons(port);
+        if (!_port) {
+		LOG_ERROR("port param error");
+                return -EINVAL;
+        }
+        _user = htons(user);
+        if (!_user) {
+		LOG_ERROR("user param error");
+                return -EINVAL;
+        }
+        if (passwd) {
+		LOG_ERROR("passwd param error");
+                return -EINVAL;
+        }
+        if (dns_policy) {
+		LOG_ERROR("dns_policy param error");
+                return -EINVAL;
+        }
+        if (route_policy) {
+		LOG_ERROR("route_policy param error");
+                return -EINVAL;
+        }
+
+	return 0;
+}
+
+static void params_uninit(void)
+{
+}
+
+static int custom_init(void)
+{
+        int err;
+
+        err = params_init();
+        if (err) {
+                LOG_ERROR("failed to init params: %d", err);
+                goto params_init_err;
+        }
+
+        route_table = route_table_init();
+        if (!route_table) {
+                err = -ENOMEM;
+                LOG_ERROR("failed to init route table: %d", err);
+                goto route_table_init_err;
+        }
+
+        return 0;
+
+route_table_init_err:
+        params_uninit();
+
+params_init_err:
+
+        return err;
+}
+
+static void custom_uninit(void)
+{
+        route_table_uninit(route_table);
+        params_uninit();
+}
+
+static inline bool is_dns_port(const struct udphdr *udph)
 {
 	return udph->dest == __constant_htons(53);
 }
 
-static bool is_dns_proto(const struct sk_buff *skb)
+static inline bool is_dns_proto(struct sk_buff *skb)
 {
 	struct iphdr *iph = ip_hdr(skb);
 	if (iph->protocol == IPPROTO_UDP)
 		if (pskb_network_may_pull(skb, sizeof(struct udphdr)))
-			return dport_is_dns_port(udp_hdr(skb));
+			return is_dns_port(udp_hdr(skb));
+	return false;
 }
 
 /**
  * https://www.iana.org/assignments/iana-ipv4-special-registry/iana-ipv4-special-registry.xhtml
  */
-static bool is_private_ip(__be32 addr)
+static bool is_private_ip(__be32 ip)
 {
 	__be32 network;
 
 	// 0.0.0.0/8, 10.0.0.0/8, 127.0.0.0/8
-	network = addr & 0xFF000000U;
+	network = ip & __constant_htonl(0xFF000000U);
 	switch (network) {
-		case 0x00000000U:
+		case __constant_htonl(0x00000000U):
 			return true;
-		case 0x0A000000U:
+		case __constant_htonl(0x0A000000U):
 			return true;
-		case 0x7F000000U:
+		case __constant_htonl(0x7F000000U):
 			return true;
 	}
 
 	// 100.64.0.0/10
-	network = addr & 0xFFC00000U;
-	if (network == 0x64400000U)
+	network = ip & __constant_htonl(0xFFC00000U);
+	if (network == __constant_htonl(0x64400000U))
 		return true;
 
 	// 172.16.0.0/12
-	network = addr & 0xFFF00000U;
-	if (network == 0xAC100000U)
+	network = ip & __constant_htonl(0xFFF00000U);
+	if (network == __constant_htonl(0xAC100000U))
 		return true;
 
 	// 192.168.0.0/16
-	network = addr & 0xFFFF0000U;
-	if (network == 0xC0A80000U)
+	network = ip & __constant_htonl(0xFFFF0000U);
+	if (network == __constant_htonl(0xC0A80000U))
 		return true;
+
+	return false;
 }
 
-static is_noproxy_dip(__be32 addr)
+static bool is_noproxy_ip(__be32 ip)
 {
-	return false;
+        return route_table_find(route_table, ip);
 }
 
 static bool need_client_encap(struct sk_buff *skb)
@@ -127,10 +242,10 @@ static bool need_client_encap(struct sk_buff *skb)
 	if (is_server_ip(iph->daddr))
 		return false;
 
-	if (dns_policy != DNS_NO_SPECIAL && is_dns_proto(skb)) {
-		if (dns_policy == DNS_ALL)
+	if (!is_dns_no_special() && is_dns_proto(skb)) {
+		if (is_dns_all())
 			return true;
-		if (dns_policy == DNS_PUBLIC && !is_private_ip(iph->daddr))
+		if (is_dns_public() && !is_private_ip(iph->daddr))
 			return true;
 		return false;
 	}
@@ -138,7 +253,7 @@ static bool need_client_encap(struct sk_buff *skb)
 	if (is_private_ip(iph->daddr))
 		return false;
 
-	if (route_policy == ROUTE_SERVER && is_noproxy_dip(iph->daddr))
+	if (is_route_learn() && is_noproxy_ip(iph->daddr))
 		return false;
 
 	return true;
@@ -147,55 +262,51 @@ static bool need_client_encap(struct sk_buff *skb)
 static int do_client_encap(struct sk_buff *skb)
 {
 	int err;
+        struct iphdr *iph, *niph;
+	struct udphdr *udph;
+	struct iprhdr *iprh;
+        int nhl;
 
-	int capl = sizeof(struct udphdr) + sizeof(struct iprhdr);
-	if (err = skb_cow(skb, capl))
+	nhl = skb_network_header_len(skb);
+
+        err = skb_cow(skb, CAPL);
+	if (err)
 		return err;
 
-	struct iphdr *iph = ip_hdr(skb);
-	int nhl = skb_network_header_len(skb);
+	iph = ip_hdr(skb);
 
 	__skb_pull(skb, nhl);
-	masq_data(skb, get_passwd());
+	masq_data_pw(skb, get_iproxy_passwd());
 
-	void *niph = __skb_push(skb, nhl + capl);
+	niph = (struct iphdr *)__skb_push(skb, nhl + CAPL);
 	memmove(niph, iph, nhl);
 	skb_reset_network_header(skb);
 	skb_set_transport_header(skb, nhl);
 
-	struct iprhdr *iprh = skb_transport_header(skb) + sizeof(struct udphdr);
+	iprh = ipr_hdr(skb);
 	iprh->type = IPR_C_S;
-	iprh->passwd = get_passwd();
-	iprh->addr = niph->daddr;
+	iprh->user = get_iproxy_user();
+	iprh->ip = niph->daddr;
 
-	struct udphdr *udph = udp_hdr(skb);
+	udph = udp_hdr(skb);
 	udph->source = get_client_port();
 	udph->dest = get_server_port();
-	udph->len = htons(ntohs(niph->tot_len) + capl - nhl);
+	udph->len = htons(ntohs(niph->tot_len) + CAPL - nhl);
 	udph->check = 0;
 
 	niph->daddr = get_server_ip();
-	niph->tot_len = htons(ntohs(niph->tot_len) + capl);
+	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);
 	//niph->check = ;
 
 	return 0;
 }
 
-/**
- * TODO: supports multi proxies
- */
-static bool is_server_ip(__be16 ip)
-{
-	return ip == _server_ip;
-}
-
-static bool is_server_port(__be16 port)
-{
-	return port == _server_port;
-}
-
 static bool need_client_decap(struct sk_buff *skb) {
-	struct iphdr *iph = ip_hdr(skb);
+	struct iphdr *iph;
+	struct udphdr *udph;
+	struct iprhdr *iprh;
+
+	iph = ip_hdr(skb);
 	if (!is_server_ip(iph->saddr))
 		return false;
 
@@ -203,38 +314,40 @@ static bool need_client_decap(struct sk_buff *skb) {
 		return false;
 
 	/* skb is defraged by nf_defrag_ipv4 */
-	if (!pskb_network_may_pull(skb, sizeof(struct udphdr) +
-				sizeof(struct iprhdr)))
+	if (!pskb_network_may_pull(skb, CAPL))
 		return false;
 
-	struct udphdr *udph = udp_hdr(skb);
+	udph = udp_hdr(skb);
 	if (!is_server_port(udph->source))
 		return false;
 
-	struct iprhdr *iprh = skb_transport_header(skb) + sizeof(struct udphdr);
-	if (!is_server_to_client(iprh))
+	iprh = ipr_hdr(skb);
+	if (!is_ipr_sc(iprh))
 		return false;
 
 	return true;
 }
 
 static unsigned int do_client_decap(struct sk_buff *skb) {
-	int capl = sizeof(struct udphdr) + sizeof(struct iprhdr);
+	int nhl;
+	struct iphdr *iph, *niph;
+	struct iprhdr *iprh;
 
-	struct iphdr *iph = ip_hdr(skb);
-	struct iprhdr *iprh = skb_transport_header(skb) + sizeof(struct udphdr);
-	iph->saddr = iprh->addr;
-	iph->tot_len = htons(ntohs(iph->tot_len) - capl);
+	nhl = skb_network_header_len(skb);
+
+	iph = ip_hdr(skb);
+	iprh = ipr_hdr(skb);
+	iph->saddr = iprh->ip;
+	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
 	//iph->check = ;
 
-	int nhl = skb_network_header_len(skb);
-	void *niph = __skb_pull(skb, capl);
+	niph = (struct iphdr *)__skb_pull(skb, CAPL);
 	memmove(niph, iph, nhl);
 	skb_reset_network_header(skb);
 	skb_set_transport_header(skb, nhl);
 
 	__skb_pull(skb, nhl);
-	demasq_data(skb, get_passwd());
+	demasq_data_pw(skb, get_iproxy_passwd());
 	__skb_push(skb, nhl);
 
 	return 0;
@@ -247,7 +360,7 @@ static unsigned int client_encap(void *priv, struct sk_buff *skb,
 		return NF_ACCEPT;
 
 	if (do_client_encap(skb))
-		return NF_ACCEPT;
+		return NF_DROP;
 
 	return NF_ACCEPT;
 }
@@ -259,12 +372,12 @@ static unsigned int client_decap(void *priv, struct sk_buff *skb,
 		return NF_ACCEPT;
 
 	if (do_client_decap(skb))
-		return NF_ACCEPT;
+		return NF_DROP;
 
 	return NF_ACCEPT;
 }
 
-static const struct nf_hook_ops iproxy_ops[] = {
+static const struct nf_hook_ops iproxy_nf_ops[] = {
 	{
 		.hook = client_encap,
 		.pf = NFPROTO_IPV4,
@@ -283,6 +396,77 @@ static const struct nf_hook_ops iproxy_ops[] = {
 		.hooknum = NF_INET_PRE_ROUTING,
 		.priority = NF_IP_PRI_FIRST,
 	},
+};
+
+enum {
+	IPRCA_NETWORK,
+	IPRCA_MASK,
+	__IPRCA_MAX,
+};
+#define IPRCA_MAX (__IPRCA_MAX - 1)
+
+enum {
+	IPRCC_CLEAR_ROUTE,
+	IPRCC_ADD_ROUTE,
+	IPRCC_SHOW_ROUTE,
+	__IPRCC_MAX,
+};
+#define IPRCC_MAX (__IPRCC_MAX - 1)
+
+static struct nla_policy iproxy_genl_policy[IPRCA_MAX + 1] = {
+	[IPRCA_NETWORK] = {.type = NLA_U32},
+	[IPRCA_MASK] = {.type = NLA_U8},
+};
+
+int clear_route(struct sk_buff *skb, struct genl_info *info)
+{
+        route_table_clear(route_table);
+        return 0;
 }
+
+int add_route(struct sk_buff *skb, struct genl_info *info)
+{
+	struct nlattr *network_attr = info->attrs[IPRCA_NETWORK];
+	struct nlattr *mask_attr = info->attrs[IPRCA_MASK];
+	if (network_attr && mask_attr) {
+		__be32 network = nla_get_be32(network_attr);
+		u8 mask = nla_get_u8(mask_attr);
+                route_table_add(route_table, network, mask);
+                return 0;
+	}
+        return -ENOTSUPP;
+}
+
+int show_route(struct sk_buff *skb, struct genl_info *info)
+{
+        return -ENOTSUPP;
+}
+
+static const struct genl_ops iproxy_genl_ops[] = {
+	{
+		.cmd = IPRCC_CLEAR_ROUTE,
+		.doit = clear_route,
+	},
+	{
+		.cmd = IPRCC_ADD_ROUTE,
+		.doit = add_route,
+		.policy = iproxy_genl_policy,
+	},
+	{
+		.cmd = IPRCC_SHOW_ROUTE,
+		.doit = show_route,
+	},
+};
+
+static struct genl_family iproxy_genl_family = {
+	.hdrsize = 0,
+	.name = "IPROXY-CLIENT",
+	.version = 0x01,
+	.maxattr = IPRCA_MAX,
+	.netnsok = true,
+	.ops = iproxy_genl_ops,
+	.n_ops = ARRAY_SIZE(iproxy_genl_ops),
+	.module = THIS_MODULE,
+};
 
 #include "module.i"
