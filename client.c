@@ -1,3 +1,4 @@
+#define CLIENT
 #include "common.h"
 
 struct route_table *route_table = NULL;
@@ -258,6 +259,9 @@ static bool need_client_encap(struct sk_buff *skb)
 	if (is_route_learn() && is_noproxy_ip(iph->daddr))
 		return false;
 
+	__u32 sip = ntohl(iph->saddr);
+	__u32 dip = ntohl(iph->daddr);
+	LOG_INFO("need_client_encap: %pI4 -> %pI4", &sip, &dip);
 	return true;
 }
 
@@ -329,6 +333,9 @@ static bool need_client_decap(struct sk_buff *skb) {
 	if (!is_ipr_sc(iprh))
 		return false;
 
+	__u32 sip = ntohl(iph->saddr);
+	__u32 dip = ntohl(iph->daddr);
+	LOG_INFO("need_client_decap: %pI4 -> %pI4", &sip, &dip);
 	return true;
 }
 

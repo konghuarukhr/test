@@ -1,5 +1,3 @@
-static struct sock *sk = NULL;
-
 static int __net_init iproxy_net_init(struct net *net)
 {
 	int err;
@@ -11,16 +9,15 @@ static int __net_init iproxy_net_init(struct net *net)
 		goto nf_register_net_hooks_err;
 	}
 
-	sk = netlink_kernel_create(net, NETLINK_GENERIC, &iproxy_nl_cfg);
-	if (!sk) {
-		err = -ENOMEM;
-		LOG_ERROR("failed to create netlink");
-		goto netlink_kernel_create_err;
+	err = genl_register_family(&iproxy_genl_family);
+	if (err) {
+		LOG_ERROR("failed to register genl family: %d", err);
+		goto genl_register_family_err;
 	}
 
 	return 0;
 
-netlink_kernel_create_err:
+genl_register_family_err:
 	nf_unregister_net_hooks(net, iproxy_nf_ops, ARRAY_SIZE(iproxy_nf_ops));
 
 nf_register_net_hooks_err:
@@ -28,16 +25,16 @@ nf_register_net_hooks_err:
 	return err;
 }
 
-static int __net_exit iproxy_net_exit(struct net *net)
+static void __net_exit iproxy_net_exit(struct net *net)
 {
-	netlink_kernel_release(sk);
+	genl_unregister_family(&iproxy_genl_family);
 
 	nf_unregister_net_hooks(net, iproxy_nf_ops, ARRAY_SIZE(iproxy_nf_ops));
 }
 
 static struct pernet_operations __net_initdata iproxy_net_ops = {
-	.init = iproxy_net_init;
-	.exit = iproxy_net_exit;
+	.init = iproxy_net_init,
+	.exit = iproxy_net_exit,
 };
 
 static int __init iproxy_init(void)
@@ -46,13 +43,13 @@ static int __init iproxy_init(void)
 
 	LOG_INFO("initing...");
 
-	err = params_init();
+	err = custom_init();
 	if (err) {
-		LOG_ERROR("failed to init input params: %d", err);
-		goto params_init_err;
+		LOG_ERROR("failed to do custom init: %d", err);
+		goto custom_init_err;
 	}
 
-	err = register_pernet_device(&iproxy_net_ops);
+	err = register_pernet_subsys(&iproxy_net_ops);
 	if (err) {
 		LOG_ERROR("failed to register net namespace: %d", err);
 		goto register_pernet_device_err;
@@ -63,9 +60,9 @@ static int __init iproxy_init(void)
 	return 0;
 
 register_pernet_device_err:
-	params_deinit();
+	custom_uninit();
 
-params_init_err:
+custom_init_err:
 
 	LOG_ERROR("exited");
 
@@ -76,9 +73,9 @@ static void __exit iproxy_exit(void)
 {
 	LOG_INFO("exiting...");
 
-	unregister_pernet_device(&iproxy_net_ops);
+	unregister_pernet_subsys(&iproxy_net_ops);
 
-	params_deinit();
+	custom_uninit();
 
 	LOG_INFO("exited");
 }
