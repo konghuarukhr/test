@@ -159,9 +159,7 @@ static bool need_server_decap(struct sk_buff *skb)
 	if (!is_ipr_cs(iprh))
 		return false;
 
-	__u32 sip = ntohl(iph->saddr);
-	__u32 dip = ntohl(iph->daddr);
-	LOG_INFO("need_server_decap: %pI4 -> %pI4", &sip, &dip);
+	LOG_INFO("need_server_decap: %pI4 -> %pI4", &iph->saddr, &iph->daddr);
 	return true;
 }
 
@@ -190,6 +188,7 @@ static int do_server_decap(struct sk_buff *skb)
 		return err;
 	}
 
+	iph->protocol = iprh->protocol;
 	iph->saddr = xvip;
 	iph->daddr = iprh->ip;
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
@@ -217,9 +216,7 @@ static bool need_server_encap(struct sk_buff *skb)
 	if (ip < _vip_start || ip >= _vip_start + vip_number)
 		return false;
 
-	__u32 sip = ntohl(iph->saddr);
-	__u32 dip = ntohl(iph->daddr);
-	LOG_INFO("need_server_encap: %pI4 -> %pI4", &sip, &dip);
+	LOG_INFO("need_server_encap: %pI4 -> %pI4", &iph->saddr, &iph->daddr);
 	return true;
 }
 
@@ -261,6 +258,7 @@ static int do_server_encap(struct sk_buff *skb)
 
 	iprh = ipr_hdr(skb);
 	iprh->type = IPR_S_C;
+	iprh->protocol = niph->protocol;
 	iprh->user = xuser;
 	iprh->ip = niph->saddr;
 
@@ -270,6 +268,7 @@ static int do_server_encap(struct sk_buff *skb)
 	udph->len = htons(ntohs(niph->tot_len) + CAPL - nhl);
 	udph->check = 0;
 
+	niph->protocol = IPPROTO_UDP;
 	niph->saddr = get_server_ip();
 	niph->daddr = xip;
 	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);

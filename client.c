@@ -259,9 +259,7 @@ static bool need_client_encap(struct sk_buff *skb)
 	if (is_route_learn() && is_noproxy_ip(iph->daddr))
 		return false;
 
-	__u32 sip = ntohl(iph->saddr);
-	__u32 dip = ntohl(iph->daddr);
-	LOG_INFO("need_client_encap: %pI4 -> %pI4", &sip, &dip);
+	LOG_INFO("need_client_encap: %pI4 -> %pI4", &iph->saddr, &iph->daddr);
 	return true;
 }
 
@@ -293,6 +291,7 @@ static int do_client_encap(struct sk_buff *skb)
 
 	iprh = ipr_hdr(skb);
 	iprh->type = IPR_C_S;
+	iprh->protocol = niph->protocol;
 	iprh->user = my_get_user();
 	iprh->ip = niph->daddr;
 
@@ -302,6 +301,7 @@ static int do_client_encap(struct sk_buff *skb)
 	udph->len = htons(ntohs(niph->tot_len) + CAPL - nhl);
 	udph->check = 0;
 
+	niph->protocol = IPPROTO_UDP;
 	niph->daddr = get_server_ip();
 	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);
 	//niph->check = ;
@@ -333,9 +333,7 @@ static bool need_client_decap(struct sk_buff *skb) {
 	if (!is_ipr_sc(iprh))
 		return false;
 
-	__u32 sip = ntohl(iph->saddr);
-	__u32 dip = ntohl(iph->daddr);
-	LOG_INFO("need_client_decap: %pI4 -> %pI4", &sip, &dip);
+	LOG_INFO("need_client_decap: %pI4 -> %pI4", &iph->saddr, &iph->daddr);
 	return true;
 }
 
@@ -350,6 +348,7 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	iph = ip_hdr(skb);
 	iprh = ipr_hdr(skb);
 
+	iph->protocol = iprh->protocol;
 	iph->saddr = iprh->ip;
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
 	//iph->check = ;

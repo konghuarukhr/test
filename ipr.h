@@ -3,7 +3,7 @@
 
 struct iprhdr {
 	__u8 type;
-	__u8 reserve;
+	__u8 protocol;
 	__be16 user;
 	__u32 ip;
 };
