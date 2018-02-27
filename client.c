@@ -425,6 +425,7 @@ enum {
 enum {
 	IPRCC_CLEAR_ROUTE,
 	IPRCC_ADD_ROUTE,
+	IPRCC_DELETE_ROUTE,
 	IPRCC_SHOW_ROUTE,
 	__IPRCC_MAX,
 };
@@ -435,26 +436,39 @@ static struct nla_policy iproxy_genl_policy[IPRCA_MAX + 1] = {
 	[IPRCA_MASK] = {.type = NLA_U8},
 };
 
-int clear_route(struct sk_buff *skb, struct genl_info *info)
+static int clear_route(struct sk_buff *skb, struct genl_info *info)
 {
 	route_table_clear(route_table);
 	return 0;
 }
 
-int add_route(struct sk_buff *skb, struct genl_info *info)
+static int add_route(struct sk_buff *skb, struct genl_info *info)
 {
 	struct nlattr *network_attr = info->attrs[IPRCA_NETWORK];
 	struct nlattr *mask_attr = info->attrs[IPRCA_MASK];
 	if (network_attr && mask_attr) {
 		__be32 network = nla_get_be32(network_attr);
-		u8 mask = nla_get_u8(mask_attr);
+		__u8 mask = nla_get_u8(mask_attr);
 		route_table_add(route_table, network, mask);
 		return 0;
 	}
-	return -ENOTSUPP;
+	return -EINVAL;
 }
 
-int show_route(struct sk_buff *skb, struct genl_info *info)
+static int delete_route(struct sk_buff *skb, struct genl_info *info)
+{
+	struct nlattr *network_attr = info->attrs[IPRCA_NETWORK];
+	struct nlattr *mask_attr = info->attrs[IPRCA_MASK];
+	if (network_attr && mask_attr) {
+		__be32 network = nla_get_be32(network_attr);
+		__u8 mask = nla_get_u8(mask_attr);
+		route_table_delete(route_table, network, mask);
+		return 0;
+	}
+	return -EINVAL;
+}
+
+static int show_route(struct sk_buff *skb, struct genl_info *info)
 {
 	return -ENOTSUPP;
 }
@@ -467,6 +481,11 @@ static const struct genl_ops iproxy_genl_ops[] = {
 	{
 		.cmd = IPRCC_ADD_ROUTE,
 		.doit = add_route,
+		.policy = iproxy_genl_policy,
+	},
+	{
+		.cmd = IPRCC_DELETE_ROUTE,
+		.doit = delete_route,
 		.policy = iproxy_genl_policy,
 	},
 	{

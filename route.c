@@ -124,6 +124,25 @@ int route_table_add(struct route_table *rt, __be32 network,
 	return route_table_add_expire(rt, network, mask, 0);
 }
 
+int route_table_add_delete(struct route_table *rt, __be32 network,
+		unsigned char mask)
+{
+	struct route_bucket *rb;
+	struct hlist_node *tmp;
+	struct route_entry *re;
+
+	rb = rt->buckets + (32 - mask);
+
+	spin_lock_bh(&rb->lock);
+	hash_for_each_possible_safe(rb->head, re, tmp, node, network)
+		if (re->network == network) {
+			route_entry_release(re);
+		}
+	spin_unlock_bh(&rb->lock);
+
+	return 0;
+}
+
 bool route_table_contains(struct route_table *rt, __be32 ip)
 {
 	int i;
