@@ -1,6 +1,7 @@
 #include "masq.h"
 #include "common.h"
 
+#if 0
 #ifndef KERNEL_VERSION
 #define KERNEL_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))
 #endif
@@ -28,6 +29,7 @@ static inline bool skb_frag_must_loop(struct page *p)
 			copied += p_len, p++, p_off = 0,               \
 			p_len = min_t(u32, f_len - copied, PAGE_SIZE))     \
 
+#endif
 #endif
 
 /**
@@ -98,7 +100,7 @@ static void process_data(struct sk_buff *skb,
 		skb_frag_t *f = &skb_shinfo(skb)->frags[i];
 		u32 f_len = skb_frag_size(f);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,14)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
 		{
 			void *vaddr = kmap_atomic(skb_frag_page(f));
 			do_process(vaddr + f->page_offset, f_len, passwd);

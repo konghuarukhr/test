@@ -15,7 +15,21 @@ static int __net_init iproxy_net_init(struct net *net)
 		goto genl_register_family_err;
 	}
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0)
+	nf_defrag_ipv4_enable();
+#else
+	err = nf_defrag_ipv4_enable(net);
+	if (err) {
+		LOG_ERROR("failed to enable ipv4 defrag: %d", err);
+		goto nf_defrag_ipv4_enable_err;
+	}
+#endif
+
 	return 0;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0)
+nf_defrag_ipv4_enable_err:
+#endif
 
 genl_register_family_err:
 	nf_unregister_net_hooks(net, iproxy_nf_ops, ARRAY_SIZE(iproxy_nf_ops));

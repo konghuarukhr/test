@@ -242,6 +242,7 @@ static bool need_client_encap(struct sk_buff *skb)
 
 	iph = ip_hdr(skb);
 
+    LOG_INFO("ip: %pI4, server ip: %pI4", &iph->daddr, &_server_ip);
 	if (is_server_ip(iph->daddr))
 		return false;
 
@@ -280,11 +281,14 @@ static int do_client_encap(struct sk_buff *skb)
 
 	nhl = skb_network_header_len(skb);
 
+    LOG_INFO("before pull: %d", skb->len);
 	__skb_pull(skb, nhl);
+    LOG_INFO("after pull: %d", skb->len);
 	masq_data(skb, get_passwd());
 
 	iph = ip_hdr(skb);
 	niph = (struct iphdr *)__skb_push(skb, nhl + CAPL);
+    LOG_INFO("after push: %d", skb->len);
 	memmove(niph, iph, nhl);
 	skb_reset_network_header(skb);
 	skb_set_transport_header(skb, nhl);
@@ -304,7 +308,8 @@ static int do_client_encap(struct sk_buff *skb)
 	niph->protocol = IPPROTO_UDP;
 	niph->daddr = get_server_ip();
 	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);
-	//niph->check = ;
+	niph->check = 0;
+	niph->check = ip_fast_csum(niph, niph->ihl);
 
 	return 0;
 }

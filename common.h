@@ -38,6 +38,8 @@
 #include <uapi/linux/ip.h>
 #include <uapi/linux/netfilter_ipv4.h>
 #include <net/genetlink.h>
+#include <net/netfilter/ipv4/nf_defrag_ipv4.h>
+#include <generated/uapi/linux/version.h>
 
 #include "ipr.h"
 #include "masq.h"
