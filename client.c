@@ -287,6 +287,7 @@ static int do_client_encap(struct sk_buff *skb)
 	masq_data(skb, get_passwd());
 
 	iph = ip_hdr(skb);
+    LOG_INFO("csum: calc3 0x%x", csum_tcpudp_magic(iph->saddr, iph->daddr, ntohs(iph->tot_len) -nhl, iph->protocol, 0));
 	niph = (struct iphdr *)__skb_push(skb, nhl + CAPL);
     LOG_INFO("after push: %d", skb->len);
 	memmove(niph, iph, nhl);
@@ -310,6 +311,23 @@ static int do_client_encap(struct sk_buff *skb)
 	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);
 	niph->check = 0;
 	niph->check = ip_fast_csum(niph, niph->ihl);
+
+    LOG_INFO("csum: ip_summed 0x%x", skb->ip_summed);
+    LOG_INFO("csum: csum 0x%x", skb->csum);
+    LOG_INFO("csum: head %p", skb->head);
+    LOG_INFO("csum: csum_start 0x%x", skb->csum_start);
+    LOG_INFO("csum: csum_start offset 0x%x", skb_checksum_start_offset(skb));
+    LOG_INFO("csum: csum_offset 0x%x", skb->csum_offset);
+    LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
+    LOG_INFO("csum: calc 0x%x", 0xffff&~csum_tcpudp_magic(niph->saddr, niph->daddr, ntohs(niph->tot_len) - CAPL - nhl, iprh->protocol, 0));
+    LOG_INFO("csum: calc2 0x%x", 0xffff&~csum_tcpudp_magic(niph->saddr, iprh->ip, ntohs(niph->tot_len) -CAPL-nhl, iprh->protocol, 0));
+    LOG_INFO("csum: csum len 0x%x", skb->len - skb_transport_offset(skb));
+    LOG_INFO("csum: csum len0 0x%x", ntohs(niph->tot_len) );
+    LOG_INFO("csum: csum len0 0x%x", (int)CAPL );
+    LOG_INFO("csum: csum len0 0x%x", nhl );
+    LOG_INFO("csum: csum len2 0x%x", ntohs(niph->tot_len )- (int)CAPL-nhl);
+    inet_proto_csum_replace4((__sum16 *)(skb->csum_start+skb->head+skb->csum_offset), skb, iprh->ip, niph->daddr, true);
+    LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
 
 	return 0;
 }

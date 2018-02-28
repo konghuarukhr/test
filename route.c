@@ -124,7 +124,7 @@ int route_table_add(struct route_table *rt, __be32 network,
 	return route_table_add_expire(rt, network, mask, 0);
 }
 
-int route_table_add_delete(struct route_table *rt, __be32 network,
+int route_table_delete(struct route_table *rt, __be32 network,
 		unsigned char mask)
 {
 	struct route_bucket *rb;
