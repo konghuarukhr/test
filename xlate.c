@@ -143,22 +143,24 @@ static void xlate_entry_timer_cb(unsigned long data)
 }
 
 int xlate_table_lookup_vip(struct xlate_table *xt, __be32 ip, __be16 port,
-		__be16 user, __be32 *vip)
+		__be16 user, __be32 *xvip)
 {
 	struct xlate_entry *xe;
+	__be32 vip;
 
 	__be64 key = ((__be64)port << 32) + ip;
 
 	rcu_read_lock();
 	hash_for_each_possible_rcu(xt->ipport_head, xe, ipport_node, key)
 		if (xe->ip == ip && xe->port == port) {
-			if (vip)
-				*vip = xe->vip;
+			if (xvip)
+				*xvip = xe->vip;
 			rcu_read_unlock();
 			return 0;
 		}
 	rcu_read_unlock();
 
+	LOG_INFO("xlate: not found ip %pI4 port %u", &ip, port);
 	xe = kzalloc(sizeof *xe, GFP_ATOMIC);
 	if (xe == NULL) {
 		LOG_ERROR("failed to alloc xlate entry memory");
@@ -168,19 +170,20 @@ int xlate_table_lookup_vip(struct xlate_table *xt, __be32 ip, __be16 port,
 	xe->ip = ip;
 	xe->port = port;
 	xe->user = user;
-	xe->vip = apply_vip(xt);
-	if (xe->vip == 0) {
+	vip = apply_vip(xt);
+	if (vip == 0) {
 		LOG_ERROR("failed to apply vip");
 		kfree(xe);
 		return -ENOENT;
 	}
-	if (vip)
-		*vip = xe->vip;
+	xe->vip = vip;
+	if (xvip)
+		*xvip = vip;
 	setup_timer(&xe->timer, xlate_entry_timer_cb, (unsigned long)xe);
 
 	spin_lock_bh(&xt->lock);
 	hash_add_rcu(xt->ipport_head, &xe->ipport_node, key);
-	hash_add_rcu(xt->vip_head, &xe->vip_node, key);
+	hash_add_rcu(xt->vip_head, &xe->vip_node, vip);
 	if (xt->vip_expire)
 		mod_timer(&xe->timer, jiffies + xt->vip_expire * HZ);
 	spin_unlock_bh(&xt->lock);

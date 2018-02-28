@@ -148,6 +148,9 @@ static bool need_server_decap(struct sk_buff *skb)
 	if (iph->protocol != IPPROTO_UDP)
 		return false;
 
+	LOG_INFO("decap: %pI4 -> %pI4", &iph->saddr, &iph->daddr);
+	LOG_INFO("decap: skb len %u", skb->len);
+
 	if (!pskb_may_pull_iprhdr(skb))
 		return false;
 
@@ -181,18 +184,22 @@ static int do_server_decap(struct sk_buff *skb)
 
 	user = iprh->user;
 
+	LOG_INFO("xlate: ip %pI4 port %u", &iph->saddr, ntohs(udph->source));
+	LOG_INFO("xlate: skb len %u", skb->len);
 	err = xlate_table_lookup_vip(xlate_table, iph->saddr, udph->source,
 			user, &xvip);
 	if (err) {
 		LOG_ERROR("failed to lookup xlate vip: %d", err);
 		return err;
 	}
+	LOG_INFO("xlate: vip %pI4", &xvip);
 
 	iph->protocol = iprh->protocol;
 	iph->saddr = xvip;
 	iph->daddr = iprh->ip;
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
-	//iph->check = ;
+	iph->check = 0;
+	iph->check = ip_fast_csum(iph, iph->ihl);
 
 	niph = (struct iphdr *)__skb_pull(skb, CAPL);
 	memmove(niph, iph, nhl);
@@ -200,7 +207,9 @@ static int do_server_decap(struct sk_buff *skb)
 	skb_set_transport_header(skb, nhl);
 
 	__skb_pull(skb, nhl);
+	LOG_INFO("before data: %x", *(__u8 *)skb->data);
 	demasq_data(skb, get_passwd(user));
+	LOG_INFO("after data: %x", *(__u8 *)skb->data);
 	__skb_push(skb, nhl);
 
 	return 0;
@@ -232,12 +241,14 @@ static int do_server_encap(struct sk_buff *skb)
 	struct iprhdr *iprh;
 
 	iph = ip_hdr(skb);
+	LOG_INFO("xlate: vip %pI4", &iph->daddr);
 	err = xlate_table_find_ipport(xlate_table, iph->daddr, &xip, &xport,
 			&xuser);
 	if (err) {
 		LOG_ERROR("failed to find xlate ipport: %d", err);
 		return err;
 	}
+	LOG_INFO("xlate: ip %pI4 port %u", &xip, ntohs(xport));
 
 	err = skb_cow(skb, CAPL);
 	if (err) {
@@ -268,11 +279,14 @@ static int do_server_encap(struct sk_buff *skb)
 	udph->len = htons(ntohs(niph->tot_len) + CAPL - nhl);
 	udph->check = 0;
 
+	LOG_INFO("XXXX: %pI4 -> %pI4", &niph->saddr, &niph->daddr);
 	niph->protocol = IPPROTO_UDP;
 	niph->saddr = get_server_ip();
 	niph->daddr = xip;
 	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);
-	//niph->check = ;
+	niph->check = 0;
+	niph->check = ip_fast_csum(niph, niph->ihl);
+	LOG_INFO("YYYY: %pI4 -> %pI4", &niph->saddr, &niph->daddr);
 
 	return 0;
 }
@@ -306,7 +320,7 @@ static const struct nf_hook_ops iproxy_nf_ops[] = {
 		.hook = server_decap,
 		.pf = NFPROTO_IPV4,
 		.hooknum = NF_INET_PRE_ROUTING,
-		.priority = NF_IP_PRI_FIRST,
+		.priority = NF_IP_PRI_CONNTRACK_DEFRAG + 1,
 	},
 	{
 		.hook = server_encap,
@@ -337,19 +351,25 @@ static void iproxy_nl_input(struct sk_buff *skb)
 #endif
 
 enum {
-	IPR_S_ATTR_UNSPEC,
-	IPR_S_ATTR_NETWORK,
-	IPR_S_ATTR_MASK,
-	__IPR_S_ATTR_MAX,
+	IPRSA_NETWORK,
+	IPRSA_MASK,
+	__IPRSA_MAX,
 };
-#define IPR_S_ATTR_MAX (__IPR_S_ATTR_MAX - 1)
+#define IPRSA_MAX (__IPRSA_MAX - 1)
 
 enum {
-	IPR_S_CMD_CLEAR_ROUTE,
-	IPR_S_CMD_ADD_ROUTE,
-	__IPR_S_CMD_MAX,
+	IPRSC_CLEAR_ROUTE,
+	IPRSC_ADD_ROUTE,
+	IPRSC_DELETE_ROUTE,
+	IPRSC_SHOW_ROUTE,
+	__IPRSC_MAX,
 };
-#define IPR_S_CMD_MAX (__IPR_S_CMD_MAX - 1)
+#define IPRSC_MAX (__IPRSC_MAX - 1)
+
+static struct nla_policy iproxy_genl_policy[IPRSA_MAX + 1] = {
+	[IPRSA_NETWORK] = {.type = NLA_U32},
+	[IPRSA_MASK] = {.type = NLA_U8},
+};
 
 int clear_route(struct sk_buff *skb, struct genl_info *info)
 {
@@ -359,7 +379,7 @@ int clear_route(struct sk_buff *skb, struct genl_info *info)
 int add_route(struct sk_buff *skb, struct genl_info *info)
 {
 	/*
-	struct nlattr *attr = info->attrs[IPR_S_ATTR_NETWORK];
+	struct nlattr *attr = info->attrs[IPRSA_NETWORK];
 	if (attr) {
 		u32 network = nla_get_u32(attr);
 		return network;
@@ -369,18 +389,13 @@ int add_route(struct sk_buff *skb, struct genl_info *info)
 }
 
 
-static struct nla_policy iproxy_genl_policy[IPR_S_ATTR_MAX + 1] = {
-	[IPR_S_ATTR_NETWORK] = {.type = NLA_U32},
-	[IPR_S_ATTR_MASK] = {.type = NLA_U8},
-};
-
 static const struct genl_ops iproxy_genl_ops[] = {
 	{
-		.cmd = IPR_S_CMD_CLEAR_ROUTE,
+		.cmd = IPRSC_CLEAR_ROUTE,
 		.doit = clear_route,
 	},
 	{
-		.cmd = IPR_S_CMD_ADD_ROUTE,
+		.cmd = IPRSC_ADD_ROUTE,
 		.doit = add_route,
 		.policy = iproxy_genl_policy,
 	},
@@ -390,7 +405,7 @@ static struct genl_family iproxy_genl_family = {
 	.hdrsize = 0,
 	.name = "IPROXY_SERVER",
 	.version = 0x01,
-	.maxattr = IPR_S_ATTR_MAX,
+	.maxattr = IPRSA_MAX,
 	.netnsok = true,
 	.ops = iproxy_genl_ops,
 	.n_ops = ARRAY_SIZE(iproxy_genl_ops),
