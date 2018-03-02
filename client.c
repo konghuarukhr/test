@@ -335,8 +335,20 @@ static int do_client_encap(struct sk_buff *skb)
 	switch (iprh->protocol) {
 		case IPPROTO_UDP:
             sum = skb_transport_header(skb) + sizeof(struct udphdr) + sizeof(struct iprhdr) + offsetof(struct udphdr, check);
+            if (!*(__sum16 *)sum && skb->ip_summed != CHECKSUM_PARTIAL)
+                break;
             if (sum - skb->data >= skb_headlen(skb)) {
                 LOG_ERROR("UDP checksum offset exceed skb head length");
+                return -EFAULT;
+            }
+			inet_proto_csum_replace4((__sum16 *)sum, skb, niph->saddr, 0, true);
+            if (!*(__sum16 *)sum)
+                *(__sum16 *)sum = CSUM_MANGLED_0;
+			break;
+		case IPPROTO_UDPLITE:
+            sum = skb_transport_header(skb) + sizeof(struct udphdr) + sizeof(struct iprhdr) + offsetof(struct udphdr, check);
+            if (sum - skb->data >= skb_headlen(skb)) {
+                LOG_ERROR("UDPLITE checksum offset exceed skb head length");
                 return -EFAULT;
             }
 			inet_proto_csum_replace4((__sum16 *)sum, skb, niph->saddr, 0, true);
