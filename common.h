@@ -34,6 +34,7 @@
 #include <linux/ip.h>
 #include <linux/netfilter.h>
 #include <linux/skbuff.h>
+#include <uapi/linux/dccp.h>
 #include <uapi/linux/udp.h>
 #include <uapi/linux/tcp.h>
 #include <uapi/linux/ip.h>

@@ -271,6 +271,7 @@ static int do_client_encap(struct sk_buff *skb)
 	struct udphdr *udph;
 	struct iprhdr *iprh;
 	int nhl;
+    __u8 *sum;
 
 
 	err = skb_cow(skb, CAPL);
@@ -281,15 +282,15 @@ static int do_client_encap(struct sk_buff *skb)
 
 	nhl = skb_network_header_len(skb);
 
-    LOG_INFO("before pull: %d", skb->len);
+    //LOG_INFO("before pull: %d", skb->len);
 	__skb_pull(skb, nhl);
-    LOG_INFO("after pull: %d", skb->len);
+    //LOG_INFO("after pull: %d", skb->len);
 	masq_data(skb, get_passwd());
 
 	iph = ip_hdr(skb);
-    LOG_INFO("csum: calc3 0x%x", csum_tcpudp_magic(iph->saddr, iph->daddr, ntohs(iph->tot_len) -nhl, iph->protocol, 0));
+    //LOG_INFO("csum: calc3 0x%x", csum_tcpudp_magic(iph->saddr, iph->daddr, ntohs(iph->tot_len) -nhl, iph->protocol, 0));
 	niph = (struct iphdr *)__skb_push(skb, nhl + CAPL);
-    LOG_INFO("after push: %d", skb->len);
+    //LOG_INFO("after push: %d", skb->len);
 	memmove(niph, iph, nhl);
 	skb_reset_network_header(skb);
 	skb_set_transport_header(skb, nhl);
@@ -313,20 +314,50 @@ static int do_client_encap(struct sk_buff *skb)
 	niph->check = ip_fast_csum(niph, niph->ihl);
 
     LOG_INFO("csum: ip_summed 0x%x", skb->ip_summed);
+    if (skb->ip_summed == 3)
+        LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
     LOG_INFO("csum: csum 0x%x", skb->csum);
+    /*
     LOG_INFO("csum: head %p", skb->head);
     LOG_INFO("csum: csum_start 0x%x", skb->csum_start);
     LOG_INFO("csum: csum_start offset 0x%x", skb_checksum_start_offset(skb));
     LOG_INFO("csum: csum_offset 0x%x", skb->csum_offset);
-    LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
     LOG_INFO("csum: calc 0x%x", 0xffff&~csum_tcpudp_magic(niph->saddr, niph->daddr, ntohs(niph->tot_len) - CAPL - nhl, iprh->protocol, 0));
     LOG_INFO("csum: calc2 0x%x", 0xffff&~csum_tcpudp_magic(niph->saddr, iprh->ip, ntohs(niph->tot_len) -CAPL-nhl, iprh->protocol, 0));
+    LOG_INFO("ffff %pI4  %pI4", &niph->saddr, &iprh->ip);
     LOG_INFO("csum: csum len 0x%x", skb->len - skb_transport_offset(skb));
     LOG_INFO("csum: csum len0 0x%x", ntohs(niph->tot_len) );
     LOG_INFO("csum: csum len0 0x%x", (int)CAPL );
     LOG_INFO("csum: csum len0 0x%x", nhl );
     LOG_INFO("csum: csum len2 0x%x", ntohs(niph->tot_len )- (int)CAPL-nhl);
-    inet_proto_csum_replace4((__sum16 *)(skb->csum_start+skb->head+skb->csum_offset), skb, iprh->ip, niph->daddr, true);
+    */
+    LOG_INFO("protocol: %d", iprh->protocol);
+	switch (iprh->protocol) {
+		case IPPROTO_UDP:
+            sum = skb_transport_header(skb) + sizeof(struct udphdr) + sizeof(struct iprhdr) + offsetof(struct udphdr, check);
+            if (sum - skb->data >= skb_headlen(skb)) {
+                LOG_ERROR("UDP checksum offset exceed skb head length");
+                return -EFAULT;
+            }
+			inet_proto_csum_replace4((__sum16 *)sum, skb, niph->saddr, 0, true);
+			break;
+		case IPPROTO_TCP:
+            sum = skb_transport_header(skb) + sizeof(struct udphdr) + sizeof(struct iprhdr) + offsetof(struct tcphdr, check);
+            if (sum - skb->data >= skb_headlen(skb)) {
+                LOG_ERROR("TCP checksum offset exceed skb head length");
+                return -EFAULT;
+            }
+			inet_proto_csum_replace4((__sum16 *)sum, skb, niph->saddr, 0, true);
+			break;
+		case IPPROTO_DCCP:
+            sum = skb_transport_header(skb) + sizeof(struct udphdr) + sizeof(struct iprhdr) + offsetof(struct dccp_hdr, dccph_checksum);
+            if (sum - skb->data >= skb_headlen(skb)) {
+                LOG_ERROR("DCCP checksum offset exceed skb head length");
+                return -EFAULT;
+            }
+			inet_proto_csum_replace4((__sum16 *)sum, skb, niph->saddr, 0, true);
+			break;
+	}
     LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
 
 	return 0;
