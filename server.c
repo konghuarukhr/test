@@ -237,6 +237,8 @@ static int do_server_decap(struct sk_buff *skb)
 			if (!udph->check)
 				break;
 			csum_replace4(&udph->check, 0, xvip);
+			if (!udph->check)
+				udph->check = CSUM_MANGLED_0;
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 		case IPPROTO_UDPLITE:

@@ -1,5 +1,5 @@
-#obj-m += iproxy-server.o
-obj-m += iproxy-client.o
+obj-m += iproxy-server.o
+#obj-m += iproxy-client.o
 #obj-m += test.o
 iproxy-server-objs := server.o xlate.o route.o masq.o
 iproxy-client-objs := client.o route.o masq.o
