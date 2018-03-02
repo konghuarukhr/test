@@ -30,7 +30,9 @@
 #include <linux/inet.h>
 #include <linux/printk.h>
 #include <linux/hashtable.h>
+#include <linux/dccp.h>
 #include <linux/udp.h>
+#include <linux/tcp.h>
 #include <linux/ip.h>
 #include <linux/netfilter.h>
 #include <linux/skbuff.h>
@@ -42,7 +44,6 @@
 #include <net/genetlink.h>
 #include <net/netfilter/ipv4/nf_defrag_ipv4.h>
 #include <generated/uapi/linux/version.h>
-#include <linux/tcp.h>
 
 #include "ipr.h"
 #include "masq.h"

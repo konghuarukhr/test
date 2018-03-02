@@ -176,6 +176,7 @@ static int do_server_decap(struct sk_buff *skb)
 	__be32 xvip;
 	__be16 user;
 	struct tcphdr *tcph;
+	struct dccp_hdr *dccph;
 
 	nhl = skb_network_header_len(skb);
 
@@ -208,10 +209,11 @@ static int do_server_decap(struct sk_buff *skb)
 	skb_set_transport_header(skb, nhl);
 
 	__skb_pull(skb, nhl);
-	LOG_INFO("before data: %x", *(__u8 *)skb->data);
+//	LOG_INFO("before data: %x", *(__u8 *)skb->data);
 	demasq_data(skb, get_passwd(user));
-	LOG_INFO("after data: %x", *(__u8 *)skb->data);
+//	LOG_INFO("after data: %x", *(__u8 *)skb->data);
 	__skb_push(skb, nhl);
+	/*
     LOG_INFO("csum: ip_summed 0x%x", skb->ip_summed);
     LOG_INFO("csum: csum 0x%x", skb->csum);
     LOG_INFO("csum: head %p", skb->head);
@@ -226,10 +228,18 @@ static int do_server_decap(struct sk_buff *skb)
     LOG_INFO("csum: csum len0 0x%x", (int)CAPL );
     LOG_INFO("csum: csum len0 0x%x", nhl );
     LOG_INFO("csum: csum len2 0x%x", ntohs(niph->tot_len ) - nhl);
+    */
     //inet_proto_csum_replace4((__sum16 *)(skb->csum_start+skb->head+skb->csum_offset), skb, iprh->ip, niph->daddr, true);
 //    LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
 	switch (niph->protocol) {
 		case IPPROTO_UDP:
+			udph = udp_hdr(skb);
+			if (!udph->check)
+				break;
+			csum_replace4(&udph->check, 0, xvip);
+			skb->ip_summed = CHECKSUM_NONE;
+			break;
+		case IPPROTO_UDPLITE:
 			udph = udp_hdr(skb);
 			csum_replace4(&udph->check, 0, xvip);
 			skb->ip_summed = CHECKSUM_NONE;
@@ -237,6 +247,11 @@ static int do_server_decap(struct sk_buff *skb)
 		case IPPROTO_TCP:
 			tcph = tcp_hdr(skb);
 			csum_replace4(&tcph->check, 0, xvip);
+			skb->ip_summed = CHECKSUM_NONE;
+			break;
+		case IPPROTO_DCCP:
+			dccph = dccp_hdr(skb);
+			csum_replace4(&dccph->dccph_checksum, 0, xvip);
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 	}
