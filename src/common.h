@@ -6,16 +6,19 @@
 #define VERSION "1.0"
 #define AUTHOR "Dustin Zheng <konghuarukhr@gmail.com>"
 
-#ifdef CLIENT
+#ifdef _IPR_CLIENT
+#define GENL_FAMILY_NAME "IPROXY_CLIENT"
 #define ALIAS "iproxy_client"
 #define DESCRIPTION "An IP proxy client"
 #else /* SERVER */
+#define GENL_FAMILY_NAME "IPROXY_SERVER"
 #define ALIAS "iproxy_server"
 #define DESCRIPTION "An IP proxy server"
 #endif
 
 //#define LINE(msg) (msg "\n")
 #define LINE(msg) msg "\n"
+#define LOG_DEBUG(msg, ...) pr_debug(ALIAS ": " "%s: " LINE(msg), __func__, ##__VA_ARGS__)
 #define LOG_INFO(msg, ...) pr_info(ALIAS ": " LINE(msg), ##__VA_ARGS__)
 //#define LOG_INFO pr_info
 #define LOG_ERROR(msg, ...) pr_err(ALIAS ": " LINE(msg), ##__VA_ARGS__)
@@ -41,6 +44,7 @@
 #include <uapi/linux/tcp.h>
 #include <uapi/linux/ip.h>
 #include <uapi/linux/netfilter_ipv4.h>
+#include <net/ip.h>
 #include <net/genetlink.h>
 #include <net/netfilter/ipv4/nf_defrag_ipv4.h>
 #include <generated/uapi/linux/version.h>

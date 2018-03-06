@@ -1,36 +1,79 @@
-#define SERVER
 #include "common.h"
+#include "kgenl.h"
 
-#define VIP_EXPIRE 2
+#define VIP_EXPIRE 300
 
-struct xlate_table *xlate_table = NULL;
-struct route_table *route_table = NULL;
+static struct xlate_table *xlate_table = NULL;
 
 static char *server_ip = NULL;
 module_param(server_ip, charp, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(server_ip, "server ip");
+MODULE_PARM_DESC(server_ip, "local IP for receiving packets from client");
 static __be32 _server_ip = 0;
 
 static unsigned short server_port = 0;
 module_param(server_port, ushort, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(server_port, "server port (UDP)");
+MODULE_PARM_DESC(server_port, "UDP port used and reserved");
 static __be16 _server_port = 0;
 
 static char *vip_start = NULL;
 module_param(vip_start, charp, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(vip_start, "virtual client ip start from (10.0.0.0)");
+MODULE_PARM_DESC(vip_start, "virtual and unreachable client IP range from");
 static __u32 _vip_start = 0;
+static __u32 _vip_end = 0;
 
 static unsigned int vip_number = 0;
 module_param(vip_number, uint, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(vip_number, "virtual client ip total number (1024)");
+MODULE_PARM_DESC(vip_number, "virtual and unreachable client IP total number");
 
 static char *dns_ip = NULL;
 module_param(dns_ip, charp, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(dns_ip, "dns ip");
+MODULE_PARM_DESC(dns_ip, "DNS IP used to replace private IP or noproxy IP");
 static __be32 _dns_ip = 0;
 
-static unsigned char get_passwd(__be16 user)
+/**
+ * TODO: supports multi proxies
+ */
+static inline __be32 get_server_ip(void)
+{
+	return _server_ip;
+}
+
+static inline bool is_server_ip(__be32 ip)
+{
+	return ip == _server_ip;
+}
+
+static inline __be16 get_server_port(void)
+{
+	return _server_port;
+}
+
+static inline bool is_server_port(__be16 port)
+{
+	return port == _server_port;
+}
+
+static inline __u32 get_vip_start(void)
+{
+	return _vip_start;
+}
+
+static inline bool is_in_vip_range(__u32 ip)
+{
+	return ip >= _vip_start && ip < _vip_end;
+}
+
+static inline unsigned int get_vip_number(void)
+{
+	return vip_number;
+}
+
+static inline __be32 get_dns_ip(void)
+{
+	return _dns_ip;
+}
+
+static inline unsigned char get_passwd(__be16 user)
 {
 	return 0;
 }
@@ -62,6 +105,7 @@ static int params_init(void)
 		LOG_ERROR("vip_number param error");
 		return -EINVAL;
 	}
+	_vip_end = _vip_start + vip_number;
 
 	if (dns_ip != NULL)
 		_dns_ip = in_aton(dns_ip);
@@ -84,56 +128,46 @@ static int custom_init(void)
 	err = params_init();
 	if (err) {
 		LOG_ERROR("failed to init input params: %d", err);
-		return err;
+		goto params_init_err;
 	}
 
 	route_table = route_table_init();
 	if (!route_table) {
+		err = -ENOMEM;
 		LOG_ERROR("failed to init route table");
-		return -ENOMEM;
+		goto route_table_init_err;
 	}
 
-	xlate_table = xlate_table_init(_vip_start, vip_number, VIP_EXPIRE);
+	xlate_table = xlate_table_init(get_vip_start(), get_vip_number(),
+			VIP_EXPIRE);
 	if (!xlate_table) {
+		err = -ENOMEM;
 		LOG_ERROR("failed to init xlate table");
-		return -ENOMEM;
+		goto xlate_table_init_err;
 	}
 
 	return 0;
+
+xlate_table_init_err:
+	route_table_uninit(route_table);
+
+route_table_init_err:
+	params_uninit();
+
+params_init_err:
+	return err;
 }
 
 static void custom_uninit(void)
 {
+	xlate_table_uninit(xlate_table);
+	route_table_uninit(route_table);
 	params_uninit();
 }
 
-static inline __be32 get_server_ip(void)
+static inline bool is_noproxy_ip(__be32 ip)
 {
-	return _server_ip;
-}
-
-static inline __be16 get_server_port(void)
-{
-	return _server_port;
-}
-
-static inline __be32 get_dns_ip(void)
-{
-	return _dns_ip;
-}
-
-
-/**
- * TODO: supports multi proxies
- */
-static bool is_server_ip(__be32 ip)
-{
-	return ip == _server_ip;
-}
-
-static bool is_server_port(__be16 port)
-{
-	return port == _server_port;
+	return route_table_get_mask(route_table, ip);
 }
 
 static bool need_server_decap(struct sk_buff *skb)
@@ -148,9 +182,6 @@ static bool need_server_decap(struct sk_buff *skb)
 	if (iph->protocol != IPPROTO_UDP)
 		return false;
 
-//	LOG_INFO("decap: %pI4 -> %pI4", &iph->saddr, &iph->daddr);
-//	LOG_INFO("decap: skb len %u", skb->len);
-
 	if (!pskb_may_pull_iprhdr(skb))
 		return false;
 
@@ -162,7 +193,7 @@ static bool need_server_decap(struct sk_buff *skb)
 	if (!is_ipr_cs(iprh))
 		return false;
 
-	LOG_INFO("need_server_decap: %pI4 -> %pI4", &iph->saddr, &iph->daddr);
+	LOG_DEBUG("%pI4 -> %pI4: yes", &ip_hdr(skb)->saddr, &ip_hdr(skb)->daddr);
 	return true;
 }
 
@@ -174,6 +205,7 @@ static int do_server_decap(struct sk_buff *skb)
 	struct udphdr *udph;
 	struct iprhdr *iprh;
 	__be32 xvip;
+	__be32 dip;
 	__be16 user;
 	struct tcphdr *tcph;
 	struct dccp_hdr *dccph;
@@ -184,55 +216,55 @@ static int do_server_decap(struct sk_buff *skb)
 	udph = udp_hdr(skb);
 	iprh = ipr_hdr(skb);
 
+	dip = iprh->ip;
 	user = iprh->user;
 
-	LOG_INFO("xlate: ip %pI4 port %u", &iph->saddr, ntohs(udph->source));
-	LOG_INFO("xlate: skb len %u", skb->len);
+	LOG_DEBUG("%pI4:%u:%u -> %pI4: decap", &iph->saddr,
+			ntohs(udph->source), user, &iph->daddr);
 	err = xlate_table_lookup_vip(xlate_table, iph->saddr, udph->source,
 			user, &xvip);
 	if (err) {
-		LOG_ERROR("failed to lookup xlate vip: %d", err);
+		LOG_ERROR("failed to lookup xlate vip by ip %p4I port %u user %u: %d",
+				&iph->saddr, ntohs(udph->source), user, err);
 		return err;
 	}
-	LOG_INFO("xlate: vip %pI4", &xvip);
+	LOG_DEBUG("found xlate vip %pI4 by ip %pI4 port %u user %u", &xvip,
+			&iph->saddr, ntohs(udph->source), user);
+
+	__skb_pull(skb, nhl + CAPL);
+	LOG_DEBUG("before masq: 0x%02x", *(__u8 *)skb->data);
+	demasq_data(skb, get_passwd(user));
+	LOG_DEBUG("after masq: 0x%02x", *(__u8 *)skb->data);
+	__skb_push(skb, nhl + CAPL);
 
 	iph->protocol = iprh->protocol;
 	iph->saddr = xvip;
-	iph->daddr = iprh->ip;
+	iph->daddr = dip;
+	if (iph->protocol == IPPROTO_UDP &&
+			pskb_may_pull_iprhdr_ext(skb, sizeof(struct udphdr)) &&
+			is_dns_port(udp_hdr(skb))) {
+		iph = ip_hdr(skb);
+		if (is_private_ip(dip) || is_noproxy_ip(dip)) {
+			iph->daddr = get_dns_ip();
+		}
+	}
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
-	iph->check = 0;
-	iph->check = ip_fast_csum(iph, iph->ihl);
+	ip_send_check(iph);
 
 	niph = (struct iphdr *)__skb_pull(skb, CAPL);
 	memmove(niph, iph, nhl);
 	skb_reset_network_header(skb);
 	skb_set_transport_header(skb, nhl);
 
-	__skb_pull(skb, nhl);
-//	LOG_INFO("before data: %x", *(__u8 *)skb->data);
-	demasq_data(skb, get_passwd(user));
-//	LOG_INFO("after data: %x", *(__u8 *)skb->data);
-	__skb_push(skb, nhl);
-	/*
-    LOG_INFO("csum: ip_summed 0x%x", skb->ip_summed);
-    LOG_INFO("csum: csum 0x%x", skb->csum);
-    LOG_INFO("csum: head %p", skb->head);
-    LOG_INFO("csum: csum_start 0x%x", skb->csum_start);
-    LOG_INFO("csum: csum_start offset 0x%x", skb_checksum_start_offset(skb));
-    LOG_INFO("csum: csum_offset 0x%x", skb->csum_offset);
-    LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
-    LOG_INFO("csum: calc 0x%x", 0xffff&~csum_tcpudp_magic(niph->saddr, niph->daddr, ntohs(niph->tot_len) - nhl, niph->protocol, 0));
-    LOG_INFO("csum: calc2 0x%x", 0xffff&~csum_tcpudp_magic(0x0F02000A, 0x08080808, ntohs(niph->tot_len) - nhl, niph->protocol, 0));
-    LOG_INFO("csum: csum len 0x%x", skb->len - skb_transport_offset(skb));
-    LOG_INFO("csum: csum len0 0x%x", ntohs(niph->tot_len) );
-    LOG_INFO("csum: csum len0 0x%x", (int)CAPL );
-    LOG_INFO("csum: csum len0 0x%x", nhl );
-    LOG_INFO("csum: csum len2 0x%x", ntohs(niph->tot_len ) - nhl);
-    */
-    //inet_proto_csum_replace4((__sum16 *)(skb->csum_start+skb->head+skb->csum_offset), skb, iprh->ip, niph->daddr, true);
-//    LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
+	LOG_DEBUG("protocol %u ip_summed %u", niph->protocol, skb->ip_summed);
 	switch (niph->protocol) {
 		case IPPROTO_UDP:
+			if (!pskb_may_pull(skb, nhl + sizeof(struct udphdr))) {
+				LOG_ERROR("%pI4 -> %pI4: UDP too short",
+						&niph->saddr,
+						&niph->daddr);
+				return -EINVAL;
+			}
 			udph = udp_hdr(skb);
 			if (!udph->check)
 				break;
@@ -242,36 +274,53 @@ static int do_server_decap(struct sk_buff *skb)
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 		case IPPROTO_UDPLITE:
+			if (!pskb_may_pull(skb, nhl + sizeof(struct udphdr))) {
+				LOG_ERROR("%pI4 -> %pI4: UDPLITE too short",
+						&niph->saddr,
+						&niph->daddr);
+				return -EINVAL;
+			}
 			udph = udp_hdr(skb);
 			csum_replace4(&udph->check, 0, xvip);
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 		case IPPROTO_TCP:
+			if (!pskb_may_pull(skb, nhl + sizeof(struct tcphdr))) {
+				LOG_ERROR("%pI4 -> %pI4: TCP too short",
+						&niph->saddr,
+						&niph->daddr);
+				return -EINVAL;
+			}
 			tcph = tcp_hdr(skb);
 			csum_replace4(&tcph->check, 0, xvip);
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 		case IPPROTO_DCCP:
+			if (!pskb_may_pull(skb, nhl + sizeof(struct dccp_hdr))) {
+				LOG_ERROR("%pI4 -> %pI4: DCCP too short",
+						&niph->saddr,
+						&niph->daddr);
+				return -EINVAL;
+			}
 			dccph = dccp_hdr(skb);
 			csum_replace4(&dccph->dccph_checksum, 0, xvip);
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 	}
 
+	LOG_DEBUG("%pI4 -> %pI4: go to server", &niph->saddr, &niph->daddr);
 	return 0;
 }
 
 static bool need_server_encap(struct sk_buff *skb)
 {
 	struct iphdr *iph;
-	__u32 ip;
 
 	iph = ip_hdr(skb);
-	ip = ntohl(iph->daddr);
-	if (ip < _vip_start || ip >= _vip_start + vip_number)
+	if (!is_in_vip_range(ntohl(iph->daddr)))
 		return false;
 
-	LOG_INFO("need_server_encap: %pI4 -> %pI4", &iph->saddr, &iph->daddr);
+	LOG_DEBUG("%pI4 -> %pI4: yes", &iph->saddr, &iph->daddr);
 	return true;
 }
 
@@ -287,18 +336,21 @@ static int do_server_encap(struct sk_buff *skb)
 	struct iprhdr *iprh;
 
 	iph = ip_hdr(skb);
-	LOG_INFO("xlate: vip %pI4", &iph->daddr);
+	LOG_DEBUG("%pI4 -> %pI4: encap", &iph->saddr, &iph->daddr);
 	err = xlate_table_find_ipport(xlate_table, iph->daddr, &xip, &xport,
 			&xuser);
 	if (err) {
-		LOG_ERROR("failed to find xlate ipport: %d", err);
+		LOG_ERROR("failed to find xlate ipport by vip %pI4: %d",
+				&iph->daddr, err);
 		return err;
 	}
-	LOG_INFO("xlate: ip %pI4 port %u", &xip, ntohs(xport));
+	LOG_DEBUG("found xlate ip %pI4 port %u user %u by vip %pI4", &xip,
+			ntohs(xport), xuser, &iph->daddr);
 
 	err = skb_cow(skb, CAPL);
 	if (err) {
-		LOG_ERROR("failed to do skb_cow: %d", err);
+		LOG_ERROR("failed to do skb_cow on packet vip %pI4: %d",
+				&iph->daddr, err);
 		return err;
 	}
 
@@ -316,7 +368,7 @@ static int do_server_encap(struct sk_buff *skb)
 	iprh = ipr_hdr(skb);
 	iprh->type = IPR_S_C;
 	iprh->protocol = niph->protocol;
-	iprh->user = xuser;
+	iprh->mask = htons(route_table_get_mask(route_table, niph->saddr));
 	iprh->ip = niph->saddr;
 
 	udph = udp_hdr(skb);
@@ -325,15 +377,14 @@ static int do_server_encap(struct sk_buff *skb)
 	udph->len = htons(ntohs(niph->tot_len) + CAPL - nhl);
 	udph->check = 0;
 
-	LOG_INFO("XXXX: %pI4 -> %pI4", &niph->saddr, &niph->daddr);
 	niph->protocol = IPPROTO_UDP;
 	niph->saddr = get_server_ip();
 	niph->daddr = xip;
 	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);
-	niph->check = 0;
-	niph->check = ip_fast_csum(niph, niph->ihl);
-	LOG_INFO("YYYY: %pI4 -> %pI4", &niph->saddr, &niph->daddr);
+	ip_send_check(niph);
 
+	LOG_DEBUG("%pI4 -> %pI4:%u: go to client", &niph->saddr, &niph->daddr,
+			ntohs(udph->dest));
 	return 0;
 }
 
@@ -376,89 +427,5 @@ static const struct nf_hook_ops iproxy_nf_ops[] = {
 	},
 };
 
-#if 0
-static void iproxy_nl_input(struct sk_buff *skb)
-{
-	struct sk_buff *skb;
-	struct nlmsghdr *nlh = NULL;
-	u8 *data = NULL;
-	nlh = nlmsg_hdr(skb);
 
-	while ((skb = skb_dequeue(&sk->receive_queue))
-			!= NULL) {
-		/* process netlink message pointed by skb->data */
-		nlh = (struct nlmsghdr *)skb->data;
-		data = NLMSG_DATA(nlh);
-		/* process netlink message with header pointed by
-		 * nlh and data pointed by data
-		 */
-	}
-}
-#endif
-
-int clear_route(struct sk_buff *skb, struct genl_info *info)
-{
-	return 0;
-}
-
-int add_route(struct sk_buff *skb, struct genl_info *info)
-{
-	/*
-	struct nlattr *attr = info->attrs[IPR_ATTR_NETWORK];
-	if (attr) {
-		u32 network = nla_get_u32(attr);
-		return network;
-	}
-	*/
-	return 0;
-}
-
-int delete_route(struct sk_buff *skb, struct genl_info *info)
-{
-	return 0;
-}
-
-int show_route(struct sk_buff *skb, struct genl_info *info)
-{
-	return 0;
-}
-
-
-static struct nla_policy iproxy_genl_policy[IPR_ATTR_MAX + 1] = {
-	[IPR_ATTR_NETWORK] = {.type = NLA_U32},
-	[IPR_ATTR_MASK] = {.type = NLA_U8},
-};
-
-static const struct genl_ops iproxy_genl_ops[] = {
-	{
-		.cmd = IPR_CMD_CLEAR_ROUTE,
-		.doit = clear_route,
-	},
-	{
-		.cmd = IPR_CMD_ADD_ROUTE,
-		.doit = add_route,
-		.policy = iproxy_genl_policy,
-	},
-	{
-		.cmd = IPR_CMD_DELETE_ROUTE,
-		.doit = delete_route,
-		.policy = iproxy_genl_policy,
-	},
-	{
-		.cmd = IPR_CMD_SHOW_ROUTE,
-		.doit = show_route,
-	},
-};
-
-static struct genl_family iproxy_genl_family = {
-	.name = "IPROXY_SERVER",
-	.version = 0x02,
-	.maxattr = IPR_ATTR_MAX,
-	.netnsok = true,
-	.ops = iproxy_genl_ops,
-	.n_ops = ARRAY_SIZE(iproxy_genl_ops),
-	.module = THIS_MODULE,
-};
-
-
-#include "module.i"
+#include "module.h"

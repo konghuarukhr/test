@@ -163,7 +163,7 @@ int xlate_table_lookup_vip(struct xlate_table *xt, __be32 ip, __be16 port,
 		}
 	rcu_read_unlock();
 
-	LOG_INFO("xlate: not found ip %pI4 port %u", &ip, port);
+	LOG_DEBUG("no ip %pI4 port %u entry, creating...", &ip, port);
 	xe = kzalloc(sizeof *xe, GFP_ATOMIC);
 	if (xe == NULL) {
 		LOG_ERROR("failed to alloc xlate entry memory");

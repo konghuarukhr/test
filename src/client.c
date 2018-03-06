@@ -1,7 +1,5 @@
-#define CLIENT
 #include "common.h"
-
-struct route_table *route_table = NULL;
+#include "kgenl.h"
 
 static char *server_ip = NULL;
 module_param(server_ip, charp, S_IRUSR | S_IRGRP | S_IROTH);
@@ -10,7 +8,7 @@ static __be32 _server_ip = 0;
 
 static unsigned short port = 0;
 module_param(port, ushort, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(port, "client & server port (UDP)");
+MODULE_PARM_DESC(port, "client/server UDP port");
 static __be16 _port = 0;
 
 static unsigned short user = 0;
@@ -18,15 +16,14 @@ module_param(user, ushort, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(user, "user");
 static __be16 _user = 0;
 
-static unsigned char passwd = 0;
-module_param(passwd, byte, 0);
-MODULE_PARM_DESC(passwd, "password");
+static unsigned char password = 0;
+module_param(password, byte, 0);
+MODULE_PARM_DESC(password, "password");
 
 static unsigned char dns_policy = 0;
 module_param(dns_policy, byte, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(dns_policy, "0: proxy all; 1: not proxy private ip; 2: no special");
 enum {
-	DNS_UNSPEC,
 	DNS_ALL,
 	DNS_PUBLIC,
 	DNS_NO_SPECIAL,
@@ -34,10 +31,9 @@ enum {
 
 static unsigned char route_policy = 0;
 module_param(route_policy, byte, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(route_policy, "0: get route from server; 1: route all traffic");
+MODULE_PARM_DESC(route_policy, "0: route proxy traffic; 1: route all traffic");
 enum {
-	ROUTE_UNSPEC,
-	ROUTE_LEARN,
+	ROUTE_PROXY,
 	ROUTE_ALL,
 };
 
@@ -79,9 +75,9 @@ static inline __be16 my_get_user(void)
 	return _user;
 }
 
-static inline unsigned char get_passwd(void)
+static inline unsigned char get_password(void)
 {
-	return passwd;
+	return password;
 }
 
 static inline bool is_dns_all(void)
@@ -99,9 +95,9 @@ static inline bool is_dns_no_special(void)
 	return dns_policy == DNS_NO_SPECIAL;
 }
 
-static inline bool is_route_learn(void)
+static inline bool is_route_proxy(void)
 {
-	return route_policy == ROUTE_LEARN;
+	return route_policy == ROUTE_PROXY;
 }
 
 static inline bool is_route_all(void)
@@ -118,24 +114,20 @@ static int params_init(void)
 		LOG_ERROR("server_ip param error");
 		return -EINVAL;
 	}
+
 	_port = htons(port);
 	if (!_port) {
 		LOG_ERROR("port param error");
 		return -EINVAL;
 	}
+
 	_user = htons(user);
-	if (!_user) {
-		LOG_ERROR("user param error");
-		return -EINVAL;
-	}
-	if (passwd) {
-		LOG_ERROR("passwd param error");
-		return -EINVAL;
-	}
+
 	if (dns_policy) {
 		LOG_ERROR("dns_policy param error");
 		return -EINVAL;
 	}
+
 	if (route_policy) {
 		LOG_ERROR("route_policy param error");
 		return -EINVAL;
@@ -171,7 +163,6 @@ route_table_init_err:
 	params_uninit();
 
 params_init_err:
-
 	return err;
 }
 
@@ -181,97 +172,63 @@ static void custom_uninit(void)
 	params_uninit();
 }
 
-static inline bool is_dns_port(const struct udphdr *udph)
+static inline bool is_noproxy_ip(__be32 ip)
 {
-	return udph->dest == __constant_htons(53);
+	return route_table_get_mask(route_table, ip);
 }
 
-static inline bool is_dns_proto(struct sk_buff *skb)
+static inline __be32 get_network(__be32 ip, unsigned char mask)
 {
-	struct iphdr *iph = ip_hdr(skb);
-	if (iph->protocol == IPPROTO_UDP)
-		if (pskb_network_may_pull(skb, sizeof(struct udphdr)))
-			return is_dns_port(udp_hdr(skb));
-	return false;
-}
-
-/**
- * https://www.iana.org/assignments/iana-ipv4-special-registry/iana-ipv4-special-registry.xhtml
- */
-static bool is_private_ip(__be32 ip)
-{
-	__be32 network;
-
-	// 0.0.0.0/8, 10.0.0.0/8, 127.0.0.0/8
-	network = ip & __constant_htonl(0xFF000000U);
-	switch (network) {
-		case __constant_htonl(0x00000000U):
-			return true;
-		case __constant_htonl(0x0A000000U):
-			return true;
-		case __constant_htonl(0x7F000000U):
-			return true;
-	}
-
-	// 100.64.0.0/10
-	network = ip & __constant_htonl(0xFFC00000U);
-	if (network == __constant_htonl(0x64400000U))
-		return true;
-
-	// 172.16.0.0/12
-	network = ip & __constant_htonl(0xFFF00000U);
-	if (network == __constant_htonl(0xAC100000U))
-		return true;
-
-	// 192.168.0.0/16
-	network = ip & __constant_htonl(0xFFFF0000U);
-	if (network == __constant_htonl(0xC0A80000U))
-		return true;
-
-	return false;
-}
-
-static bool is_noproxy_ip(__be32 ip)
-{
-	return route_table_contains(route_table, ip);
+	return ip & -(1 << (32 - mask));
 }
 
 static bool need_client_encap(struct sk_buff *skb)
 {
+	int nhl;
 	struct iphdr *iph;
 
-	iph = ip_hdr(skb);
+	nhl = skb_network_header_len(skb);
 
-    LOG_INFO("ip: %pI4, server ip: %pI4", &iph->daddr, &_server_ip);
+	iph = ip_hdr(skb);
 	if (is_server_ip(iph->daddr))
 		return false;
 
-	if (!is_dns_no_special() && is_dns_proto(skb)) {
-		if (is_dns_all())
+	if (!is_dns_no_special() && iph->protocol == IPPROTO_UDP &&
+			pskb_may_pull(skb, nhl + sizeof(struct udphdr)) &&
+			is_dns_port(udp_hdr(skb))) {
+		iph = ip_hdr(skb);
+		if (is_dns_all()) {
+			LOG_DEBUG("%pI4 -> %pI4: yes, dns all", &iph->saddr,
+					&iph->daddr);
 			return true;
-		if (is_dns_public() && !is_private_ip(iph->daddr))
+		}
+		if (is_dns_public() && !is_private_ip(iph->daddr)) {
+			LOG_DEBUG("%pI4 -> %pI4: yes, dns public", &iph->saddr,
+					&iph->daddr);
 			return true;
+		}
 		return false;
 	}
 
 	if (is_private_ip(iph->daddr))
 		return false;
 
-	if (is_route_learn() && is_noproxy_ip(iph->daddr))
+	if (is_route_proxy() && is_noproxy_ip(iph->daddr))
 		return false;
 
-	LOG_INFO("need_client_encap: %pI4 -> %pI4", &iph->saddr, &iph->daddr);
+	LOG_DEBUG("%pI4 -> %pI4: yes", &iph->saddr, &iph->daddr);
 	return true;
 }
 
 static int do_client_encap(struct sk_buff *skb)
 {
 	int err;
+	int nhl;
 	struct iphdr *iph, *niph;
 	struct udphdr *udph;
 	struct iprhdr *iprh;
-	int nhl;
-    __u8 *sum;
+	__be32 sip;
+	__u8 *sum;
 
 
 	err = skb_cow(skb, CAPL);
@@ -282,15 +239,12 @@ static int do_client_encap(struct sk_buff *skb)
 
 	nhl = skb_network_header_len(skb);
 
-    //LOG_INFO("before pull: %d", skb->len);
 	__skb_pull(skb, nhl);
-    //LOG_INFO("after pull: %d", skb->len);
-	masq_data(skb, get_passwd());
+	masq_data(skb, get_password());
 
 	iph = ip_hdr(skb);
-    //LOG_INFO("csum: calc3 0x%x", csum_tcpudp_magic(iph->saddr, iph->daddr, ntohs(iph->tot_len) -nhl, iph->protocol, 0));
+	LOG_DEBUG("%pI4 -> %pI4: encap", &iph->saddr, &iph->daddr);
 	niph = (struct iphdr *)__skb_push(skb, nhl + CAPL);
-    //LOG_INFO("after push: %d", skb->len);
 	memmove(niph, iph, nhl);
 	skb_reset_network_header(skb);
 	skb_set_transport_header(skb, nhl);
@@ -313,65 +267,55 @@ static int do_client_encap(struct sk_buff *skb)
 	niph->check = 0;
 	niph->check = ip_fast_csum(niph, niph->ihl);
 
-    LOG_INFO("csum: ip_summed 0x%x", skb->ip_summed);
-    if (skb->ip_summed == 3)
-        LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
-    LOG_INFO("csum: csum 0x%x", skb->csum);
-    /*
-    LOG_INFO("csum: head %p", skb->head);
-    LOG_INFO("csum: csum_start 0x%x", skb->csum_start);
-    LOG_INFO("csum: csum_start offset 0x%x", skb_checksum_start_offset(skb));
-    LOG_INFO("csum: csum_offset 0x%x", skb->csum_offset);
-    LOG_INFO("csum: calc 0x%x", 0xffff&~csum_tcpudp_magic(niph->saddr, niph->daddr, ntohs(niph->tot_len) - CAPL - nhl, iprh->protocol, 0));
-    LOG_INFO("csum: calc2 0x%x", 0xffff&~csum_tcpudp_magic(niph->saddr, iprh->ip, ntohs(niph->tot_len) -CAPL-nhl, iprh->protocol, 0));
-    LOG_INFO("ffff %pI4  %pI4", &niph->saddr, &iprh->ip);
-    LOG_INFO("csum: csum len 0x%x", skb->len - skb_transport_offset(skb));
-    LOG_INFO("csum: csum len0 0x%x", ntohs(niph->tot_len) );
-    LOG_INFO("csum: csum len0 0x%x", (int)CAPL );
-    LOG_INFO("csum: csum len0 0x%x", nhl );
-    LOG_INFO("csum: csum len2 0x%x", ntohs(niph->tot_len )- (int)CAPL-nhl);
-    */
-    LOG_INFO("protocol: %d", iprh->protocol);
+	LOG_INFO("csum: ip_summed 0x%x", skb->ip_summed);
+	if (skb->ip_summed == 3)
+		LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
+	LOG_INFO("csum: csum 0x%x", skb->csum);
+
+	sip = niph->saddr;
+	LOG_DEBUG("protocol %u ip_summed %u", iprh->protocol, skb->ip_summed);
 	switch (iprh->protocol) {
 		case IPPROTO_UDP:
-            sum = skb_transport_header(skb) + sizeof(struct udphdr) + sizeof(struct iprhdr) + offsetof(struct udphdr, check);
-            if (!*(__sum16 *)sum && skb->ip_summed != CHECKSUM_PARTIAL)
-                break;
-            if (sum - skb->data >= skb_headlen(skb)) {
-                LOG_ERROR("UDP checksum offset exceed skb head length");
-                return -EFAULT;
-            }
-			inet_proto_csum_replace4((__sum16 *)sum, skb, niph->saddr, 0, true);
-            if (!*(__sum16 *)sum)
-                *(__sum16 *)sum = CSUM_MANGLED_0;
+			if (!pskb_may_pull_iprhdr_ext(skb, sizeof(struct udphdr))) {
+				LOG_ERROR("UDP header offset exceed");
+				return -EFAULT;
+			}
+			sum = skb_transport_header(skb) + CAPL + offsetof(struct udphdr, check);
+			if (!*(__sum16 *)sum && skb->ip_summed != CHECKSUM_PARTIAL)
+				break;
+			inet_proto_csum_replace4((__sum16 *)sum, skb, sip, 0, true);
+			if (!*(__sum16 *)sum)
+				*(__sum16 *)sum = CSUM_MANGLED_0;
 			break;
 		case IPPROTO_UDPLITE:
-            sum = skb_transport_header(skb) + sizeof(struct udphdr) + sizeof(struct iprhdr) + offsetof(struct udphdr, check);
-            if (sum - skb->data >= skb_headlen(skb)) {
-                LOG_ERROR("UDPLITE checksum offset exceed skb head length");
-                return -EFAULT;
-            }
-			inet_proto_csum_replace4((__sum16 *)sum, skb, niph->saddr, 0, true);
+			if (!pskb_may_pull_iprhdr_ext(skb, sizeof(struct udphdr))) {
+				LOG_ERROR("UDPLITE header offset exceed");
+				return -EFAULT;
+			}
+			sum = skb_transport_header(skb) + CAPL + offsetof(struct udphdr, check);
+			inet_proto_csum_replace4((__sum16 *)sum, skb, sip, 0, true);
 			break;
 		case IPPROTO_TCP:
-            sum = skb_transport_header(skb) + sizeof(struct udphdr) + sizeof(struct iprhdr) + offsetof(struct tcphdr, check);
-            if (sum - skb->data >= skb_headlen(skb)) {
-                LOG_ERROR("TCP checksum offset exceed skb head length");
-                return -EFAULT;
-            }
-			inet_proto_csum_replace4((__sum16 *)sum, skb, niph->saddr, 0, true);
+			if (!pskb_may_pull_iprhdr_ext(skb, sizeof(struct tcphdr))) {
+				LOG_ERROR("TCP header offset exceed");
+				return -EFAULT;
+			}
+			sum = skb_transport_header(skb) + CAPL + offsetof(struct tcphdr, check);
+			inet_proto_csum_replace4((__sum16 *)sum, skb, sip, 0, true);
 			break;
 		case IPPROTO_DCCP:
-            sum = skb_transport_header(skb) + sizeof(struct udphdr) + sizeof(struct iprhdr) + offsetof(struct dccp_hdr, dccph_checksum);
-            if (sum - skb->data >= skb_headlen(skb)) {
-                LOG_ERROR("DCCP checksum offset exceed skb head length");
-                return -EFAULT;
-            }
-			inet_proto_csum_replace4((__sum16 *)sum, skb, niph->saddr, 0, true);
+			if (!pskb_may_pull_iprhdr_ext(skb, sizeof(struct tcphdr))) {
+				LOG_ERROR("DCCP header offset exceed");
+				return -EFAULT;
+			}
+			sum = skb_transport_header(skb) + CAPL + offsetof(struct dccp_hdr, dccph_checksum);
+			inet_proto_csum_replace4((__sum16 *)sum, skb, sip, 0, true);
 			break;
 	}
-    LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
+	LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
 
+	LOG_DEBUG("%pI4 -> %pI4: go to proxy", &ip_hdr(skb)->saddr,
+			&ip_hdr(skb)->daddr);
 	return 0;
 }
 
@@ -383,12 +327,11 @@ static bool need_client_decap(struct sk_buff *skb) {
 	iph = ip_hdr(skb);
 	if (!is_server_ip(iph->saddr))
 		return false;
-
 	if (iph->protocol != IPPROTO_UDP)
 		return false;
 
-	/* skb is defraged by nf_defrag_ipv4 */
-	if (!pskb_network_may_pull(skb, CAPL))
+	/* skb is defraged */
+	if (!pskb_may_pull_iprhdr(skb))
 		return false;
 
 	udph = udp_hdr(skb);
@@ -399,7 +342,7 @@ static bool need_client_decap(struct sk_buff *skb) {
 	if (!is_ipr_sc(iprh))
 		return false;
 
-	LOG_INFO("need_client_decap: %pI4 -> %pI4", &iph->saddr, &iph->daddr);
+	LOG_DEBUG("%pI4 -> %pI4: yes", &ip_hdr(skb)->saddr, &ip_hdr(skb)->daddr);
 	return true;
 }
 
@@ -408,16 +351,28 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	int nhl;
 	struct iphdr *iph, *niph;
 	struct iprhdr *iprh;
+	struct udphdr *udph;
+	struct tcphdr *tcph;
+	struct dccp_hdr *dccph;
+	__be32 server_ip;
 
 	nhl = skb_network_header_len(skb);
 
 	iph = ip_hdr(skb);
+	server_ip = iph->saddr;
+	LOG_DEBUG("%pI4 -> %pI4: decap", &iph->saddr, &iph->daddr);
 	iprh = ipr_hdr(skb);
+	if (iprh->mask) {
+		unsigned char mask = ntohs(iprh->mask);
+		route_table_add(route_table, get_network(iprh->ip, mask),
+				ntohs(iprh->mask));
+		LOG_DEBUG("add route %pI4/%u", &iprh->ip, mask);
+	}
 
 	iph->protocol = iprh->protocol;
 	iph->saddr = iprh->ip;
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
-	//iph->check = ;
+	ip_send_check(iph);
 
 	niph = (struct iphdr *)__skb_pull(skb, CAPL);
 	memmove(niph, iph, nhl);
@@ -425,9 +380,62 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	skb_set_transport_header(skb, nhl);
 
 	__skb_pull(skb, nhl);
-	demasq_data(skb, get_passwd());
+	demasq_data(skb, get_password());
 	__skb_push(skb, nhl);
 
+	LOG_DEBUG("protocol %u ip_summed %u", niph->protocol, skb->ip_summed);
+	switch (niph->protocol) {
+		case IPPROTO_UDP:
+			if (!pskb_may_pull(skb, nhl + sizeof(struct udphdr))) {
+				LOG_ERROR("%pI4 -> %pI4: UDP too short",
+						&niph->saddr,
+						&niph->daddr);
+				return -EINVAL;
+			}
+			udph = udp_hdr(skb);
+			if (!udph->check)
+				break;
+			csum_replace4(&udph->check, server_ip, iph->saddr);
+			if (!udph->check)
+				udph->check = CSUM_MANGLED_0;
+			skb->ip_summed = CHECKSUM_NONE;
+			break;
+		case IPPROTO_UDPLITE:
+			if (!pskb_may_pull(skb, nhl + sizeof(struct udphdr))) {
+				LOG_ERROR("%pI4 -> %pI4: UDPLITE too short",
+						&niph->saddr,
+						&niph->daddr);
+				return -EINVAL;
+			}
+			udph = udp_hdr(skb);
+			csum_replace4(&udph->check, server_ip, iph->saddr);
+			skb->ip_summed = CHECKSUM_NONE;
+			break;
+		case IPPROTO_TCP:
+			if (!pskb_may_pull(skb, nhl + sizeof(struct tcphdr))) {
+				LOG_ERROR("%pI4 -> %pI4: TCP too short",
+						&niph->saddr,
+						&niph->daddr);
+				return -EINVAL;
+			}
+			tcph = tcp_hdr(skb);
+			csum_replace4(&udph->check, server_ip, iph->saddr);
+			skb->ip_summed = CHECKSUM_NONE;
+			break;
+		case IPPROTO_DCCP:
+			if (!pskb_may_pull(skb, nhl + sizeof(struct dccp_hdr))) {
+				LOG_ERROR("%pI4 -> %pI4: DCCP too short",
+						&niph->saddr,
+						&niph->daddr);
+				return -EINVAL;
+			}
+			dccph = dccp_hdr(skb);
+			csum_replace4(&udph->check, server_ip, iph->saddr);
+			skb->ip_summed = CHECKSUM_NONE;
+			break;
+	}
+
+	LOG_DEBUG("%pI4 -> %pI4: received", &niph->saddr, &niph->daddr);
 	return 0;
 }
 
@@ -459,111 +467,27 @@ static const struct nf_hook_ops iproxy_nf_ops[] = {
 	{
 		.hook = client_encap,
 		.pf = NFPROTO_IPV4,
-		.hooknum = NF_INET_LOCAL_OUT,
+		.hooknum = NF_INET_LOCAL_OUT, /* before routing */
 		.priority = NF_IP_PRI_LAST,
 	},
 	{
 		.hook = client_encap,
 		.pf = NFPROTO_IPV4,
-		.hooknum = NF_INET_FORWARD,
+		.hooknum = NF_INET_FORWARD, /* before routing, need iptables defrag, used by router */
 		.priority = NF_IP_PRI_LAST,
 	},
 	{
 		.hook = client_decap,
 		.pf = NFPROTO_IPV4,
-		.hooknum = NF_INET_PRE_ROUTING,
+		.hooknum = NF_INET_LOCAL_IN, /* after defrag */
+		.priority = NF_IP_PRI_FIRST,
+	},
+	{
+		.hook = client_decap,
+		.pf = NFPROTO_IPV4,
+		.hooknum = NF_INET_FORWARD, /* need iptables defrag, used by router */
 		.priority = NF_IP_PRI_FIRST,
 	},
 };
 
-enum {
-	IPRCA_NETWORK,
-	IPRCA_MASK,
-	__IPR_ATTR_MAX,
-};
-#define IPR_ATTR_MAX (__IPR_ATTR_MAX - 1)
-
-enum {
-	IPR_CMD_CLEAR_ROUTE,
-	IPR_CMD_ADD_ROUTE,
-	IPR_CMD_DELETE_ROUTE,
-	IPR_CMD_SHOW_ROUTE,
-	__IPRCC_MAX,
-};
-#define IPRCC_MAX (__IPRCC_MAX - 1)
-
-static int clear_route(struct sk_buff *skb, struct genl_info *info)
-{
-	route_table_clear(route_table);
-	return 0;
-}
-
-static int add_route(struct sk_buff *skb, struct genl_info *info)
-{
-	struct nlattr *network_attr = info->attrs[IPRCA_NETWORK];
-	struct nlattr *mask_attr = info->attrs[IPRCA_MASK];
-	if (network_attr && mask_attr) {
-		__be32 network = nla_get_be32(network_attr);
-		__u8 mask = nla_get_u8(mask_attr);
-		route_table_add(route_table, network, mask);
-		return 0;
-	}
-	return -EINVAL;
-}
-
-static int delete_route(struct sk_buff *skb, struct genl_info *info)
-{
-	struct nlattr *network_attr = info->attrs[IPRCA_NETWORK];
-	struct nlattr *mask_attr = info->attrs[IPRCA_MASK];
-	if (network_attr && mask_attr) {
-		__be32 network = nla_get_be32(network_attr);
-		__u8 mask = nla_get_u8(mask_attr);
-		route_table_delete(route_table, network, mask);
-		return 0;
-	}
-	return -EINVAL;
-}
-
-static int show_route(struct sk_buff *skb, struct genl_info *info)
-{
-	return -ENOTSUPP;
-}
-
-static struct nla_policy iproxy_genl_policy[IPR_ATTR_MAX + 1] = {
-	[IPRCA_NETWORK] = {.type = NLA_U32},
-	[IPRCA_MASK] = {.type = NLA_U8},
-};
-
-static const struct genl_ops iproxy_genl_ops[] = {
-	{
-		.cmd = IPR_CMD_CLEAR_ROUTE,
-		.doit = clear_route,
-	},
-	{
-		.cmd = IPR_CMD_ADD_ROUTE,
-		.doit = add_route,
-		.policy = iproxy_genl_policy,
-	},
-	{
-		.cmd = IPR_CMD_DELETE_ROUTE,
-		.doit = delete_route,
-		.policy = iproxy_genl_policy,
-	},
-	{
-		.cmd = IPR_CMD_SHOW_ROUTE,
-		.doit = show_route,
-	},
-};
-
-static struct genl_family iproxy_genl_family = {
-	.name = "IPROXY_CLIENT",
-	.version = 0x02,
-	.maxattr = IPR_ATTR_MAX,
-	.netnsok = true,
-	.ops = iproxy_genl_ops,
-	.n_ops = ARRAY_SIZE(iproxy_genl_ops),
-	.module = THIS_MODULE,
-};
-
-
-#include "module.i"
+#include "module.h"

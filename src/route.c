@@ -143,7 +143,7 @@ int route_table_delete(struct route_table *rt, __be32 network,
 	return 0;
 }
 
-bool route_table_contains(struct route_table *rt, __be32 ip)
+unsigned char route_table_get_mask(struct route_table *rt, __be32 ip)
 {
 	int i;
 
@@ -161,9 +161,9 @@ bool route_table_contains(struct route_table *rt, __be32 ip)
 		hash_for_each_possible_rcu(rb->head, re, node, key)
 			if (re->network == key) {
 				rcu_read_unlock();
-				return true;
+				return 32 - i;
 			}
 		rcu_read_unlock();
 	}
-	return false;
+	return 0;
 }

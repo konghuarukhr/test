@@ -15,6 +15,6 @@ int route_table_add_expire(struct route_table *rt, __be32 network,
 		unsigned char mask, int secs);
 int route_table_delete(struct route_table *rt, __be32 network,
                 unsigned char mask);
-bool route_table_contains(struct route_table *rt, __be32 ip);
+unsigned char route_table_get_mask(struct route_table *rt, __be32 ip);
 
 #endif

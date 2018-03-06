@@ -233,3 +233,23 @@ int clear_all_kernel_route(struct genlsk *genlsk)
 		return -1;
 	return 0;
 }
+
+#if 0
+static void iproxy_nl_input(struct sk_buff *skb)
+{
+	struct sk_buff *skb;
+	struct nlmsghdr *nlh = NULL;
+	u8 *data = NULL;
+	nlh = nlmsg_hdr(skb);
+
+	while ((skb = skb_dequeue(&sk->receive_queue))
+			!= NULL) {
+		/* process netlink message pointed by skb->data */
+		nlh = (struct nlmsghdr *)skb->data;
+		data = NLMSG_DATA(nlh);
+		/* process netlink message with header pointed by
+		 * nlh and data pointed by data
+		 */
+	}
+}
+#endif
