@@ -240,12 +240,16 @@ static int do_server_decap(struct sk_buff *skb)
 	iph->protocol = iprh->protocol;
 	iph->saddr = xvip;
 	iph->daddr = dip;
+	LOG_DEBUG("dip %pI4 %u", &dip, iph->protocol);
 	if (iph->protocol == IPPROTO_UDP &&
 			pskb_may_pull_iprhdr_ext(skb, sizeof(struct udphdr)) &&
-			is_dns_port(udp_hdr(skb))) {
+			is_dns_port((struct udphdr *)(skb_transport_header(skb) + CAPL))) {
+		LOG_DEBUG("dip %pI4 %d", &dip, is_private_ip(dip));
 		iph = ip_hdr(skb);
 		if (is_private_ip(dip) || is_noproxy_ip(dip)) {
-			iph->daddr = get_dns_ip();
+			__be32 dnsip = get_dns_ip();
+			iph->daddr = dnsip;
+			LOG_DEBUG("change dest ip to %pI4", &dnsip);
 		}
 	}
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
@@ -269,6 +273,10 @@ static int do_server_decap(struct sk_buff *skb)
 			if (!udph->check)
 				break;
 			csum_replace4(&udph->check, 0, xvip);
+			if (iph->daddr != dip) {
+				LOG_DEBUG("%pI4 -> %pI4", &dip, &niph->daddr);
+				csum_replace4(&udph->check, dip, niph->daddr);
+			}
 			if (!udph->check)
 				udph->check = CSUM_MANGLED_0;
 			skb->ip_summed = CHECKSUM_NONE;

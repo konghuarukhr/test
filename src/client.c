@@ -3,7 +3,7 @@
 
 static char *server_ip = NULL;
 module_param(server_ip, charp, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(server_ip, "server ip");
+MODULE_PARM_DESC(server_ip, "server IP");
 static __be32 _server_ip = 0;
 
 static unsigned short port = 0;
@@ -22,11 +22,12 @@ MODULE_PARM_DESC(password, "password");
 
 static unsigned char dns_policy = 0;
 module_param(dns_policy, byte, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(dns_policy, "0: proxy all; 1: not proxy private ip; 2: no special");
+MODULE_PARM_DESC(dns_policy, "0: proxy all; 1: not proxy private IP; 2: no special");
 enum {
 	DNS_ALL,
 	DNS_PUBLIC,
 	DNS_NO_SPECIAL,
+	DNS_POLICY_MAX
 };
 
 static unsigned char route_policy = 0;
@@ -35,6 +36,7 @@ MODULE_PARM_DESC(route_policy, "0: route proxy traffic; 1: route all traffic");
 enum {
 	ROUTE_PROXY,
 	ROUTE_ALL,
+	ROUTE_POLICY_MAX
 };
 
 /**
@@ -123,12 +125,12 @@ static int params_init(void)
 
 	_user = htons(user);
 
-	if (dns_policy) {
+	if (dns_policy >= DNS_POLICY_MAX) {
 		LOG_ERROR("dns_policy param error");
 		return -EINVAL;
 	}
 
-	if (route_policy) {
+	if (route_policy >= ROUTE_POLICY_MAX) {
 		LOG_ERROR("route_policy param error");
 		return -EINVAL;
 	}
