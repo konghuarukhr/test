@@ -30,6 +30,11 @@ enum {
 	DNS_POLICY_MAX
 };
 
+static char *dns_ip = NULL;
+module_param(dns_ip, charp, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(dns_ip, "DNS IP used to replace private DNS IP or noproxy DNS IP");
+static __be32 _dns_ip = 0;
+
 static unsigned char route_policy = 0;
 module_param(route_policy, byte, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(route_policy, "0: route proxy traffic; 1: route all traffic");
@@ -97,6 +102,11 @@ static inline bool is_dns_no_special(void)
 	return dns_policy == DNS_NO_SPECIAL;
 }
 
+static inline __be32 get_dns_ip(void)
+{
+	return _dns_ip;
+}
+
 static inline bool is_route_proxy(void)
 {
 	return route_policy == ROUTE_PROXY;
@@ -110,7 +120,7 @@ static inline bool is_route_all(void)
 
 static int params_init(void)
 {
-	if (server_ip != NULL)
+	if (server_ip)
 		_server_ip = in_aton(server_ip);
 	if (!_server_ip) {
 		LOG_ERROR("server_ip param error");
@@ -127,6 +137,13 @@ static int params_init(void)
 
 	if (dns_policy >= DNS_POLICY_MAX) {
 		LOG_ERROR("dns_policy param error");
+		return -EINVAL;
+	}
+
+	if (dns_ip)
+		_dns_ip = in_aton(dns_ip);
+	if (!_dns_ip && !is_dns_no_special()) {
+		LOG_ERROR("dns_ip param error");
 		return -EINVAL;
 	}
 
@@ -182,6 +199,26 @@ static inline bool is_noproxy_ip(__be32 ip)
 static inline __be32 get_network(__be32 ip, unsigned char mask)
 {
 	return ip & -(1 << (32 - mask));
+}
+
+/**
+ * dirty local DNS IP
+ * we assume only one IP will be used in a period time
+ * we don't use lock to protect it to avoid overhead
+ * if we get the wrong local_dns_ip, it will lead to packet drop, and retransmit
+ * this packet
+ */
+static __be32 local_dns_ip = 0;
+
+static inline void set_local_dns_ip(__be32 ip)
+{
+	if (local_dns_ip != ip)
+		local_dns_ip = ip;
+}
+
+static inline __be32 get_local_dns_ip(void)
+{
+	return local_dns_ip;
 }
 
 static bool need_client_encap(struct sk_buff *skb)
@@ -355,28 +392,26 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	struct udphdr *udph;
 	struct tcphdr *tcph;
 	struct dccp_hdr *dccph;
-	__be32 server_ip;
-    __be32 dip;
+	__be32 local_ip;
 
 	nhl = skb_network_header_len(skb);
 
 	iph = ip_hdr(skb);
-	server_ip = iph->saddr;
+	local_ip = iph->daddr;
 	LOG_DEBUG("%pI4 -> %pI4: decap", &iph->saddr, &iph->daddr);
 	iprh = ipr_hdr(skb);
-    dip = iprh->ip;
 	if (iprh->mask) {
 		unsigned char mask = ntohs(iprh->mask);
-        __be32 network = get_network(dip, mask);
+        __be32 network = get_network(iprh->ip, mask);
         /*
-		route_table_add(route_table, get_network(dip, mask),
+		route_table_add(route_table, get_network(iprh->ip, mask),
 				ntohs(iprh->mask));
                 */
 		LOG_DEBUG("add route %pI4/%u", &network, mask);
 	}
 
 	iph->protocol = iprh->protocol;
-	iph->saddr = dip;
+	iph->saddr = iprh->ip;
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
 	ip_send_check(iph);
 
@@ -402,7 +437,7 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 			udph = udp_hdr(skb);
 			if (!udph->check)
 				break;
-			csum_replace4(&udph->check, server_ip, dip);
+			csum_replace4(&udph->check, 0, local_ip);
 			if (!udph->check)
 				udph->check = CSUM_MANGLED_0;
 			skb->ip_summed = CHECKSUM_NONE;
@@ -415,7 +450,7 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 				return -EINVAL;
 			}
 			udph = udp_hdr(skb);
-			csum_replace4(&udph->check, server_ip, dip);
+			csum_replace4(&udph->check, 0, local_ip);
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 		case IPPROTO_TCP:
@@ -426,7 +461,7 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 				return -EINVAL;
 			}
 			tcph = tcp_hdr(skb);
-			csum_replace4(&tcph->check, 0, in_aton("10.0.2.15"));
+			csum_replace4(&tcph->check, 0, local_ip);
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 		case IPPROTO_DCCP:
@@ -437,7 +472,7 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 				return -EINVAL;
 			}
 			dccph = dccp_hdr(skb);
-			csum_replace4(&dccph->dccph_checksum, server_ip, dip);
+			csum_replace4(&dccph->dccph_checksum, 0, local_ip);
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 	}
