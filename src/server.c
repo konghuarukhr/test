@@ -342,23 +342,26 @@ static int do_server_encap(struct sk_buff *skb)
 	struct iphdr *iph, *niph;
 	struct udphdr *udph;
 	struct iprhdr *iprh;
+	__be32 vip;
+	__u8 *sum;
 
 	iph = ip_hdr(skb);
 	LOG_DEBUG("%pI4 -> %pI4: encap", &iph->saddr, &iph->daddr);
-	err = xlate_table_find_ipport(xlate_table, iph->daddr, &xip, &xport,
+	vip = iph->daddr;
+	err = xlate_table_find_ipport(xlate_table, vip, &xip, &xport,
 			&xuser);
 	if (err) {
 		LOG_ERROR("failed to find xlate ipport by vip %pI4: %d",
-				&iph->daddr, err);
+				&vip, err);
 		return err;
 	}
 	LOG_DEBUG("found xlate ip %pI4 port %u user %u by vip %pI4", &xip,
-			ntohs(xport), xuser, &iph->daddr);
+			ntohs(xport), xuser, &vip);
 
 	err = skb_cow(skb, CAPL);
 	if (err) {
 		LOG_ERROR("failed to do skb_cow on packet vip %pI4: %d",
-				&iph->daddr, err);
+				&vip, err);
 		return err;
 	}
 
@@ -390,6 +393,46 @@ static int do_server_encap(struct sk_buff *skb)
 	niph->daddr = xip;
 	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);
 	ip_send_check(niph);
+
+	LOG_DEBUG("protocol %u ip_summed %u", iprh->protocol, skb->ip_summed);
+	switch (iprh->protocol) {
+		case IPPROTO_UDP:
+			if (!pskb_may_pull_iprhdr_ext(skb, sizeof(struct udphdr))) {
+				LOG_ERROR("UDP header offset exceed");
+				return -EFAULT;
+			}
+			sum = skb_transport_header(skb) + CAPL + offsetof(struct udphdr, check);
+			if (!*(__sum16 *)sum && skb->ip_summed != CHECKSUM_PARTIAL)
+				break;
+			inet_proto_csum_replace4((__sum16 *)sum, skb, vip, 0, true);
+			if (!*(__sum16 *)sum)
+				*(__sum16 *)sum = CSUM_MANGLED_0;
+			break;
+		case IPPROTO_UDPLITE:
+			if (!pskb_may_pull_iprhdr_ext(skb, sizeof(struct udphdr))) {
+				LOG_ERROR("UDPLITE header offset exceed");
+				return -EFAULT;
+			}
+			sum = skb_transport_header(skb) + CAPL + offsetof(struct udphdr, check);
+			inet_proto_csum_replace4((__sum16 *)sum, skb, vip, 0, true);
+			break;
+		case IPPROTO_TCP:
+			if (!pskb_may_pull_iprhdr_ext(skb, sizeof(struct tcphdr))) {
+				LOG_ERROR("TCP header offset exceed");
+				return -EFAULT;
+			}
+			sum = skb_transport_header(skb) + CAPL + offsetof(struct tcphdr, check);
+			inet_proto_csum_replace4((__sum16 *)sum, skb, vip, 0, true);
+			break;
+		case IPPROTO_DCCP:
+			if (!pskb_may_pull_iprhdr_ext(skb, sizeof(struct tcphdr))) {
+				LOG_ERROR("DCCP header offset exceed");
+				return -EFAULT;
+			}
+			sum = skb_transport_header(skb) + CAPL + offsetof(struct dccp_hdr, dccph_checksum);
+			inet_proto_csum_replace4((__sum16 *)sum, skb, vip, 0, true);
+			break;
+	}
 
 	LOG_DEBUG("%pI4 -> %pI4:%u: go to client", &niph->saddr, &niph->daddr,
 			ntohs(udph->dest));
