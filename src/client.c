@@ -269,7 +269,6 @@ static int do_client_encap(struct sk_buff *skb)
 	niph->check = 0;
 	niph->check = ip_fast_csum(niph, niph->ihl);
 
-	LOG_INFO("csum: ip_summed 0x%x", skb->ip_summed);
 	if (skb->ip_summed == 3)
 		LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
 	LOG_INFO("csum: csum 0x%x", skb->csum);
@@ -357,6 +356,7 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	struct tcphdr *tcph;
 	struct dccp_hdr *dccph;
 	__be32 server_ip;
+    __be32 dip;
 
 	nhl = skb_network_header_len(skb);
 
@@ -364,15 +364,19 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	server_ip = iph->saddr;
 	LOG_DEBUG("%pI4 -> %pI4: decap", &iph->saddr, &iph->daddr);
 	iprh = ipr_hdr(skb);
+    dip = iprh->ip;
 	if (iprh->mask) {
 		unsigned char mask = ntohs(iprh->mask);
-		route_table_add(route_table, get_network(iprh->ip, mask),
+        __be32 network = get_network(dip, mask);
+        /*
+		route_table_add(route_table, get_network(dip, mask),
 				ntohs(iprh->mask));
-		LOG_DEBUG("add route %pI4/%u", &iprh->ip, mask);
+                */
+		LOG_DEBUG("add route %pI4/%u", &network, mask);
 	}
 
 	iph->protocol = iprh->protocol;
-	iph->saddr = iprh->ip;
+	iph->saddr = dip;
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
 	ip_send_check(iph);
 
@@ -386,6 +390,7 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	__skb_push(skb, nhl);
 
 	LOG_DEBUG("protocol %u ip_summed %u", niph->protocol, skb->ip_summed);
+	LOG_DEBUG("csum: csum 0x%x", skb->csum);
 	switch (niph->protocol) {
 		case IPPROTO_UDP:
 			if (!pskb_may_pull(skb, nhl + sizeof(struct udphdr))) {
@@ -397,7 +402,7 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 			udph = udp_hdr(skb);
 			if (!udph->check)
 				break;
-			csum_replace4(&udph->check, server_ip, iph->saddr);
+			csum_replace4(&udph->check, server_ip, dip);
 			if (!udph->check)
 				udph->check = CSUM_MANGLED_0;
 			skb->ip_summed = CHECKSUM_NONE;
@@ -410,7 +415,7 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 				return -EINVAL;
 			}
 			udph = udp_hdr(skb);
-			csum_replace4(&udph->check, server_ip, iph->saddr);
+			csum_replace4(&udph->check, server_ip, dip);
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 		case IPPROTO_TCP:
@@ -421,7 +426,7 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 				return -EINVAL;
 			}
 			tcph = tcp_hdr(skb);
-			csum_replace4(&udph->check, server_ip, iph->saddr);
+			csum_replace4(&tcph->check, 0, in_aton("10.0.2.15"));
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 		case IPPROTO_DCCP:
@@ -432,7 +437,7 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 				return -EINVAL;
 			}
 			dccph = dccp_hdr(skb);
-			csum_replace4(&udph->check, server_ip, iph->saddr);
+			csum_replace4(&dccph->dccph_checksum, server_ip, dip);
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 	}
