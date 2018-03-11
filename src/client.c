@@ -235,7 +235,7 @@ static bool need_client_encap(struct sk_buff *skb)
 		return false;
 
 	if (!is_dns_no_special() && iph->protocol == IPPROTO_UDP &&
-			pskb_may_pull(skb, skb_network_header_len(skb) + CAPL +
+			pskb_may_pull(skb, skb_network_header_len(skb) +
 				sizeof(struct udphdr)) &&
 			udp_hdr(skb)->dest == DNS_PORT) {
 		if (is_dns_all()) {
@@ -289,8 +289,7 @@ static int do_client_encap(struct sk_buff *skb)
 
 	iph = ip_hdr(skb);
 	if (!is_dns_no_special() && iph->protocol == IPPROTO_UDP &&
-			*(__be16 *)(skb_transport_header(skb) + CAPL +
-				offsetof(struct udphdr, dest)) == DNS_PORT) {
+			udp_hdr(skb)->dest == DNS_PORT) {
 		rewrite_dns = true;
 		LOG_DEBUG("%pI4 -> %pI4: rewrite DNS IP", &sip, &dip);
 	} else

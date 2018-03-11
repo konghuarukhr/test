@@ -203,16 +203,17 @@ static int do_server_decap(struct sk_buff *skb)
 	user = iprh->user;
 
 	LOG_DEBUG("%pI4:%u:%u -> %pI4: decap", &iph->saddr,
-			ntohs(udph->source), user, &iph->daddr);
+			ntohs(udph->source), ntohs(user), &iph->daddr);
 	err = xlate_table_lookup_vip(xlate_table, iph->saddr, udph->source,
 			user, &xvip);
 	if (err) {
 		LOG_ERROR("failed to lookup xlate vip by ip %p4I port %u user %u: %d",
-				&iph->saddr, ntohs(udph->source), user, err);
+				&iph->saddr, ntohs(udph->source), ntohs(user),
+				err);
 		return err;
 	}
 	LOG_DEBUG("found xlate vip %pI4 by ip %pI4 port %u user %u", &xvip,
-			&iph->saddr, ntohs(udph->source), user);
+			&iph->saddr, ntohs(udph->source), ntohs(user));
 
 	__skb_pull(skb, nhl + CAPL);
 	LOG_DEBUG("before masq: 0x%02x", *(__u8 *)skb->data);
@@ -245,10 +246,6 @@ static int do_server_decap(struct sk_buff *skb)
 			if (!udph->check)
 				break;
 			csum_replace4(&udph->check, 0, xvip);
-			if (iph->daddr != dip) {
-				LOG_DEBUG("%pI4 -> %pI4", &dip, &niph->daddr);
-				csum_replace4(&udph->check, dip, niph->daddr);
-			}
 			if (!udph->check)
 				udph->check = CSUM_MANGLED_0;
 			skb->ip_summed = CHECKSUM_NONE;
@@ -328,7 +325,7 @@ static int do_server_encap(struct sk_buff *skb)
 		return err;
 	}
 	LOG_DEBUG("found xlate ip %pI4 port %u user %u by vip %pI4", &xip,
-			ntohs(xport), xuser, &vip);
+			ntohs(xport), ntohs(xuser), &vip);
 
 	err = skb_cow(skb, CAPL);
 	if (err) {
