@@ -303,7 +303,7 @@ static int do_client_encap(struct sk_buff *skb)
 	skb_set_transport_header(skb, nhl);
 
 	iprh = ipr_hdr(skb);
-	set_ipr_sc(iprh);
+	set_ipr_cs(iprh);
 	iprh->protocol = niph->protocol;
 	iprh->user = my_get_user();
 	if (rewrite_dns) {

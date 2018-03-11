@@ -25,11 +25,6 @@ static unsigned int vip_number = 0;
 module_param(vip_number, uint, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(vip_number, "virtual and unreachable client IP total number");
 
-static char *dns_ip = NULL;
-module_param(dns_ip, charp, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(dns_ip, "DNS IP used to replace private IP or noproxy IP");
-static __be32 _dns_ip = 0;
-
 /**
  * TODO: supports multi proxies
  */
@@ -68,11 +63,6 @@ static inline unsigned int get_vip_number(void)
 	return vip_number;
 }
 
-static inline __be32 get_dns_ip(void)
-{
-	return _dns_ip;
-}
-
 static inline unsigned char get_passwd(__be16 user)
 {
 	return 0;
@@ -106,13 +96,6 @@ static int params_init(void)
 		return -EINVAL;
 	}
 	_vip_end = _vip_start + vip_number;
-
-	if (dns_ip != NULL)
-		_dns_ip = in_aton(dns_ip);
-	if (_dns_ip == 0) {
-		LOG_ERROR("dns_ip param error");
-		return -EINVAL;
-	}
 
 	return 0;
 }
@@ -241,17 +224,6 @@ static int do_server_decap(struct sk_buff *skb)
 	iph->saddr = xvip;
 	iph->daddr = dip;
 	LOG_DEBUG("dip %pI4 %u", &dip, iph->protocol);
-	if (iph->protocol == IPPROTO_UDP &&
-			pskb_may_pull_iprhdr_ext(skb, sizeof(struct udphdr)) &&
-			is_dns_port((struct udphdr *)(skb_transport_header(skb) + CAPL))) {
-		LOG_DEBUG("dip %pI4 %d", &dip, is_private_ip(dip));
-		iph = ip_hdr(skb);
-		if (is_private_ip(dip) || is_noproxy_ip(dip)) {
-			__be32 dnsip = get_dns_ip();
-			iph->daddr = dnsip;
-			LOG_DEBUG("change dest ip to %pI4", &dnsip);
-		}
-	}
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
 	ip_send_check(iph);
 
