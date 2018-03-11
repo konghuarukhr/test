@@ -28,9 +28,19 @@ static inline bool is_ipr_cs(const struct iprhdr *iprh)
 	return iprh->type == IPR_C_S;
 }
 
+static inline void set_ipr_cs(struct iprhdr *iprh)
+{
+	iprh->type = IPR_C_S;
+}
+
 static inline bool is_ipr_sc(const struct iprhdr *iprh)
 {
 	return iprh->type == IPR_S_C;
+}
+
+static inline void set_ipr_sc(struct iprhdr *iprh)
+{
+	iprh->type = IPR_S_C;
 }
 
 static inline int pskb_may_pull_iprhdr(struct sk_buff *skb)

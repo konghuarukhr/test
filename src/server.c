@@ -445,8 +445,10 @@ static unsigned int server_decap(void *priv, struct sk_buff *skb,
 	if (!need_server_decap(skb))
 		return NF_ACCEPT;
 
-	if (do_server_decap(skb))
+	if (do_server_decap(skb)) {
+		LOG_ERROR("drop packet in server decap");
 		return NF_DROP;
+	}
 
 	return NF_ACCEPT;
 }
@@ -457,8 +459,10 @@ static unsigned int server_encap(void *priv, struct sk_buff *skb,
 	if (!need_server_encap(skb))
 		return NF_ACCEPT;
 
-	if (do_server_encap(skb))
+	if (do_server_encap(skb)) {
+		LOG_ERROR("drop packet in server encap");
 		return NF_DROP;
+	}
 
 	return NF_ACCEPT;
 }

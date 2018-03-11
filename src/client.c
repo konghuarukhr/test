@@ -203,7 +203,7 @@ static inline __be32 get_network(__be32 ip, unsigned char mask)
 
 /**
  * dirty local DNS IP
- * we assume only one IP will be used in a period time
+ * we assume only one IP will be used in a period of time
  * we don't use lock to protect it to avoid overhead
  * if we get the wrong local_dns_ip, it will lead to packet drop, and retransmit
  * this packet
@@ -223,39 +223,41 @@ static inline __be32 get_local_dns_ip(void)
 
 static bool need_client_encap(struct sk_buff *skb)
 {
-	int nhl;
 	struct iphdr *iph;
-
-	nhl = skb_network_header_len(skb);
+	__be32 sip;
+	__be32 dip;
 
 	iph = ip_hdr(skb);
-	if (is_server_ip(iph->daddr))
+	sip = iph->saddr;
+	dip = iph->daddr;
+
+	if (is_server_ip(dip))
 		return false;
 
 	if (!is_dns_no_special() && iph->protocol == IPPROTO_UDP &&
-			pskb_may_pull(skb, nhl + sizeof(struct udphdr)) &&
-			is_dns_port(udp_hdr(skb))) {
-		iph = ip_hdr(skb);
+			pskb_may_pull(skb, skb_network_header_len(skb) + CAPL +
+				sizeof(struct udphdr)) &&
+			udp_hdr(skb)->dest == DNS_PORT) {
 		if (is_dns_all()) {
-			LOG_DEBUG("%pI4 -> %pI4: yes, dns all", &iph->saddr,
-					&iph->daddr);
+			LOG_DEBUG("%pI4 -> %pI4: yes, dns all", &sip, &dip);
 			return true;
 		}
-		if (is_dns_public() && !is_private_ip(iph->daddr)) {
-			LOG_DEBUG("%pI4 -> %pI4: yes, dns public", &iph->saddr,
-					&iph->daddr);
+
+		if (is_dns_public() && !is_private_ip(dip)) {
+			LOG_DEBUG("%pI4 -> %pI4: yes, dns public", &sip, &dip);
 			return true;
 		}
+
 		return false;
 	}
 
-	if (is_private_ip(iph->daddr))
+	if (is_private_ip(dip))
 		return false;
 
-	if (is_route_proxy() && is_noproxy_ip(iph->daddr))
+	if (is_route_proxy() && is_noproxy_ip(dip))
 		return false;
 
-	LOG_DEBUG("%pI4 -> %pI4: yes", &iph->saddr, &iph->daddr);
+	LOG_DEBUG("%pI4 -> %pI4: yes", &sip, &dip);
 	return true;
 }
 
@@ -267,93 +269,126 @@ static int do_client_encap(struct sk_buff *skb)
 	struct udphdr *udph;
 	struct iprhdr *iprh;
 	__be32 sip;
-	__u8 *sum;
-
-
-	err = skb_cow(skb, CAPL);
-	if (err) {
-		LOG_ERROR("failed to do skb_cow: %d", err);
-		return err;
-	}
+	__be32 dip;
+	bool rewrite_dns;
+	__sum16 *sum;
 
 	nhl = skb_network_header_len(skb);
 
-	__skb_pull(skb, nhl);
-	masq_data(skb, get_password());
+	iph = ip_hdr(skb);
+	sip = iph->saddr;
+	dip = iph->daddr;
+	LOG_DEBUG("%pI4 -> %pI4: encap", &sip, &dip);
+
+	err = skb_cow(skb, CAPL);
+	if (err) {
+		LOG_ERROR("%pI4 -> %pI4: failed to do skb_cow: %d", &sip, &dip,
+				err);
+		return err;
+	}
 
 	iph = ip_hdr(skb);
-	LOG_DEBUG("%pI4 -> %pI4: encap", &iph->saddr, &iph->daddr);
-	niph = (struct iphdr *)__skb_push(skb, nhl + CAPL);
+	if (!is_dns_no_special() && iph->protocol == IPPROTO_UDP &&
+			*(__be16 *)(skb_transport_header(skb) + CAPL +
+				offsetof(struct udphdr, dest)) == DNS_PORT) {
+		rewrite_dns = true;
+		LOG_DEBUG("%pI4 -> %pI4: rewrite DNS IP", &sip, &dip);
+	} else
+		rewrite_dns = false;
+
+	iph = ip_hdr(skb);
+	niph = (struct iphdr *)__skb_push(skb, CAPL);
 	memmove(niph, iph, nhl);
 	skb_reset_network_header(skb);
 	skb_set_transport_header(skb, nhl);
 
 	iprh = ipr_hdr(skb);
-	iprh->type = IPR_C_S;
+	set_ipr_sc(iprh);
 	iprh->protocol = niph->protocol;
 	iprh->user = my_get_user();
-	iprh->ip = niph->daddr;
+	if (rewrite_dns) {
+		set_local_dns_ip(dip);
+		iprh->ip = get_dns_ip();
+	} else
+		iprh->ip = dip;
 
 	udph = udp_hdr(skb);
 	udph->source = get_client_port();
 	udph->dest = get_server_port();
-	udph->len = htons(ntohs(niph->tot_len) + CAPL - nhl);
+	udph->len = htons(ntohs(niph->tot_len) - nhl + CAPL);
 	udph->check = 0;
 
 	niph->protocol = IPPROTO_UDP;
 	niph->daddr = get_server_ip();
 	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);
-	niph->check = 0;
-	niph->check = ip_fast_csum(niph, niph->ihl);
+	ip_send_check(niph);
 
 	if (skb->ip_summed == 3)
 		LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
-	LOG_INFO("csum: csum 0x%x", skb->csum);
 
-	sip = niph->saddr;
-	LOG_DEBUG("protocol %u ip_summed %u", iprh->protocol, skb->ip_summed);
+	LOG_DEBUG("protocol %u ip_summed %u csum 0x%08x", iprh->protocol,
+			skb->ip_summed, skb->csum);
 	switch (iprh->protocol) {
 		case IPPROTO_UDP:
-			if (!pskb_may_pull_iprhdr_ext(skb, sizeof(struct udphdr))) {
-				LOG_ERROR("UDP header offset exceed");
+			if (!pskb_may_pull_iprhdr_ext(skb,
+						sizeof(struct udphdr))) {
+				LOG_ERROR("%pI4 -> %pI4: UDP too short", &sip,
+						&dip);
 				return -EFAULT;
 			}
-			sum = skb_transport_header(skb) + CAPL + offsetof(struct udphdr, check);
-			if (!*(__sum16 *)sum && skb->ip_summed != CHECKSUM_PARTIAL)
+			sum = (__sum16 *)(skb_transport_header(skb) + CAPL +
+				offsetof(struct udphdr, check));
+			if (!*sum && skb->ip_summed != CHECKSUM_PARTIAL)
 				break;
-			inet_proto_csum_replace4((__sum16 *)sum, skb, sip, 0, true);
-			if (!*(__sum16 *)sum)
-				*(__sum16 *)sum = CSUM_MANGLED_0;
+			inet_proto_csum_replace4(sum, skb, sip, 0, true);
+			if (rewrite_dns)
+				inet_proto_csum_replace4(sum, skb, dip,
+						get_dns_ip(), true);
+			if (!*sum)
+				*sum = CSUM_MANGLED_0;
 			break;
 		case IPPROTO_UDPLITE:
-			if (!pskb_may_pull_iprhdr_ext(skb, sizeof(struct udphdr))) {
-				LOG_ERROR("UDPLITE header offset exceed");
+			if (!pskb_may_pull_iprhdr_ext(skb,
+						sizeof(struct udphdr))) {
+				LOG_ERROR("%pI4 -> %pI4: UDPLITE too short",
+						&sip, &dip);
 				return -EFAULT;
 			}
-			sum = skb_transport_header(skb) + CAPL + offsetof(struct udphdr, check);
-			inet_proto_csum_replace4((__sum16 *)sum, skb, sip, 0, true);
+			sum = (__sum16 *)(skb_transport_header(skb) + CAPL +
+				offsetof(struct udphdr, check));
+			inet_proto_csum_replace4(sum, skb, sip, 0, true);
 			break;
 		case IPPROTO_TCP:
-			if (!pskb_may_pull_iprhdr_ext(skb, sizeof(struct tcphdr))) {
-				LOG_ERROR("TCP header offset exceed");
+			if (!pskb_may_pull_iprhdr_ext(skb,
+						sizeof(struct tcphdr))) {
+				LOG_ERROR("%pI4 -> %pI4: TCP too short", &sip,
+						&dip);
 				return -EFAULT;
 			}
-			sum = skb_transport_header(skb) + CAPL + offsetof(struct tcphdr, check);
-			inet_proto_csum_replace4((__sum16 *)sum, skb, sip, 0, true);
+			sum = (__sum16 *)(skb_transport_header(skb) + CAPL +
+				offsetof(struct tcphdr, check));
+			inet_proto_csum_replace4(sum, skb, sip, 0, true);
 			break;
 		case IPPROTO_DCCP:
-			if (!pskb_may_pull_iprhdr_ext(skb, sizeof(struct tcphdr))) {
-				LOG_ERROR("DCCP header offset exceed");
+			if (!pskb_may_pull_iprhdr_ext(skb,
+						sizeof(struct tcphdr))) {
+				LOG_ERROR("%pI4 -> %pI4: DCCP too short", &sip,
+						&dip);
 				return -EFAULT;
 			}
-			sum = skb_transport_header(skb) + CAPL + offsetof(struct dccp_hdr, dccph_checksum);
-			inet_proto_csum_replace4((__sum16 *)sum, skb, sip, 0, true);
+			sum = (__sum16 *)(skb_transport_header(skb) + CAPL +
+				offsetof(struct dccp_hdr, dccph_checksum));
+			inet_proto_csum_replace4(sum, skb, sip, 0, true);
 			break;
 	}
-	LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
+	if (skb->ip_summed == 3)
+		LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
 
-	LOG_DEBUG("%pI4 -> %pI4: go to proxy", &ip_hdr(skb)->saddr,
-			&ip_hdr(skb)->daddr);
+	__skb_pull(skb, nhl + CAPL);
+	masq_data(skb, get_password());
+	__skb_push(skb, nhl + CAPL);
+
+	LOG_DEBUG("%pI4 -> %pI4: go to proxy", &sip, &dip);
 	return 0;
 }
 
@@ -380,7 +415,7 @@ static bool need_client_decap(struct sk_buff *skb) {
 	if (!is_ipr_sc(iprh))
 		return false;
 
-	LOG_DEBUG("%pI4 -> %pI4: yes", &ip_hdr(skb)->saddr, &ip_hdr(skb)->daddr);
+	LOG_DEBUG("%pI4 <- %pI4: yes", &ip_hdr(skb)->daddr, &ip_hdr(skb)->saddr);
 	return true;
 }
 
@@ -392,26 +427,46 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	struct udphdr *udph;
 	struct tcphdr *tcph;
 	struct dccp_hdr *dccph;
-	__be32 local_ip;
+	__be32 sip;
+	__be32 dip;
+	__be32 pip;
+	bool rewrite_dns;
+	__be32 dns_ip;
+
+	dns_ip = get_local_dns_ip();
 
 	nhl = skb_network_header_len(skb);
 
+	__skb_pull(skb, nhl + CAPL);
+	demasq_data(skb, get_password());
+	__skb_push(skb, nhl + CAPL);
+
 	iph = ip_hdr(skb);
-	local_ip = iph->daddr;
-	LOG_DEBUG("%pI4 -> %pI4: decap", &iph->saddr, &iph->daddr);
+	sip = iph->saddr;
+	dip = iph->daddr;
+	LOG_DEBUG("%pI4 <- %pI4: decap", &dip, &sip);
+
+	if (!is_dns_no_special() && iph->protocol == IPPROTO_UDP &&
+			pskb_may_pull(skb, nhl + CAPL + sizeof(struct udphdr)) &&
+			*(__be16 *)(skb_transport_header(skb) + CAPL +
+				offsetof(struct udphdr, dest)) == DNS_PORT) {
+		rewrite_dns = true;
+		LOG_DEBUG("%pI4 <- %pI4: rewrite DNS IP", &dip, &sip);
+	} else
+		rewrite_dns = false;
+
+	iph = ip_hdr(skb);
 	iprh = ipr_hdr(skb);
+	pip = iprh->ip;
 	if (iprh->mask) {
 		unsigned char mask = ntohs(iprh->mask);
-        __be32 network = get_network(iprh->ip, mask);
-        /*
-		route_table_add(route_table, get_network(iprh->ip, mask),
-				ntohs(iprh->mask));
-                */
-		LOG_DEBUG("add route %pI4/%u", &network, mask);
+		__be32 network = get_network(pip, mask);
+		LOG_DEBUG("%pI4 <- %pI4: add route %pI4/%u", &dip, &sip,
+				&network, mask);
+		//route_table_add(route_table, network, mask);
 	}
-
 	iph->protocol = iprh->protocol;
-	iph->saddr = iprh->ip;
+	iph->saddr = rewrite_dns ? dns_ip : pip;
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
 	ip_send_check(iph);
 
@@ -420,64 +475,58 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	skb_reset_network_header(skb);
 	skb_set_transport_header(skb, nhl);
 
-	__skb_pull(skb, nhl);
-	demasq_data(skb, get_password());
-	__skb_push(skb, nhl);
-
-	LOG_DEBUG("protocol %u ip_summed %u", niph->protocol, skb->ip_summed);
-	LOG_DEBUG("csum: csum 0x%x", skb->csum);
+	LOG_DEBUG("protocol %u ip_summed %u csum 0x%08x", niph->protocol,
+			skb->ip_summed, skb->csum);
 	switch (niph->protocol) {
 		case IPPROTO_UDP:
 			if (!pskb_may_pull(skb, nhl + sizeof(struct udphdr))) {
-				LOG_ERROR("%pI4 -> %pI4: UDP too short",
-						&niph->saddr,
-						&niph->daddr);
-				return -EINVAL;
+				LOG_ERROR("%pI4 <- %pI4: UDP too short", &dip,
+						&sip);
+				return -EFAULT;
 			}
 			udph = udp_hdr(skb);
 			if (!udph->check)
 				break;
-			csum_replace4(&udph->check, 0, local_ip);
+			csum_replace4(&udph->check, 0, dip);
+			if (rewrite_dns)
+				csum_replace4(&udph->check, pip, dns_ip);
 			if (!udph->check)
 				udph->check = CSUM_MANGLED_0;
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 		case IPPROTO_UDPLITE:
 			if (!pskb_may_pull(skb, nhl + sizeof(struct udphdr))) {
-				LOG_ERROR("%pI4 -> %pI4: UDPLITE too short",
-						&niph->saddr,
-						&niph->daddr);
-				return -EINVAL;
+				LOG_ERROR("%pI4 <- %pI4: UDPLITE too short",
+						&dip, &sip);
+				return -EFAULT;
 			}
 			udph = udp_hdr(skb);
-			csum_replace4(&udph->check, 0, local_ip);
+			csum_replace4(&udph->check, 0, dip);
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 		case IPPROTO_TCP:
 			if (!pskb_may_pull(skb, nhl + sizeof(struct tcphdr))) {
-				LOG_ERROR("%pI4 -> %pI4: TCP too short",
-						&niph->saddr,
-						&niph->daddr);
-				return -EINVAL;
+				LOG_ERROR("%pI4 <- %pI4: TCP too short", &dip,
+						&sip);
+				return -EFAULT;
 			}
 			tcph = tcp_hdr(skb);
-			csum_replace4(&tcph->check, 0, local_ip);
+			csum_replace4(&tcph->check, 0, dip);
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 		case IPPROTO_DCCP:
 			if (!pskb_may_pull(skb, nhl + sizeof(struct dccp_hdr))) {
-				LOG_ERROR("%pI4 -> %pI4: DCCP too short",
-						&niph->saddr,
-						&niph->daddr);
-				return -EINVAL;
+				LOG_ERROR("%pI4 <- %pI4: DCCP too short", &dip,
+						&sip);
+				return -EFAULT;
 			}
 			dccph = dccp_hdr(skb);
-			csum_replace4(&dccph->dccph_checksum, 0, local_ip);
+			csum_replace4(&dccph->dccph_checksum, 0, dip);
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 	}
 
-	LOG_DEBUG("%pI4 -> %pI4: received", &niph->saddr, &niph->daddr);
+	LOG_DEBUG("%pI4 <- %pI4: received", &dip, &sip);
 	return 0;
 }
 
@@ -487,8 +536,10 @@ static unsigned int client_encap(void *priv, struct sk_buff *skb,
 	if (!need_client_encap(skb))
 		return NF_ACCEPT;
 
-	if (do_client_encap(skb))
+	if (do_client_encap(skb)) {
+		LOG_ERROR("drop packet in client encap");
 		return NF_DROP;
+	}
 
 	return NF_ACCEPT;
 }
@@ -499,8 +550,10 @@ static unsigned int client_decap(void *priv, struct sk_buff *skb,
 	if (!need_client_decap(skb))
 		return NF_ACCEPT;
 
-	if (do_client_decap(skb))
+	if (do_client_decap(skb)) {
+		LOG_ERROR("drop packet in client decap");
 		return NF_DROP;
+	}
 
 	return NF_ACCEPT;
 }
@@ -515,7 +568,7 @@ static const struct nf_hook_ops iproxy_nf_ops[] = {
 	{
 		.hook = client_encap,
 		.pf = NFPROTO_IPV4,
-		.hooknum = NF_INET_FORWARD, /* before routing, need iptables defrag, used by router */
+		.hooknum = NF_INET_FORWARD, /* before routing, NEED iptables defrag, used by router */
 		.priority = NF_IP_PRI_LAST,
 	},
 	{
@@ -527,9 +580,10 @@ static const struct nf_hook_ops iproxy_nf_ops[] = {
 	{
 		.hook = client_decap,
 		.pf = NFPROTO_IPV4,
-		.hooknum = NF_INET_FORWARD, /* need iptables defrag, used by router */
+		.hooknum = NF_INET_FORWARD, /* NEED iptables defrag, used by router */
 		.priority = NF_IP_PRI_FIRST,
 	},
 };
+
 
 #include "module.h"

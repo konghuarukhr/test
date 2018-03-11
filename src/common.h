@@ -25,6 +25,8 @@
 //#define LOG_ERROR(msg, ...) pr_err(msg, ##__VA_ARGS__)
 //#define LOG_ERROR pr_err
 
+#define DNS_PORT __constant_htons(53)
+
 #include <net/net_namespace.h>
 #include <net/sock.h>
 //#include <linux/kernel.h>

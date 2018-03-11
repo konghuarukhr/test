@@ -13,7 +13,7 @@ ccflags-y := -D_IPR_SERVER
 endif
 
 ifeq ($(d),debug)
-ccflags-y += -DDEBUG
+ccflags-y += -DDEBUG -Wall
 endif
 
 all:
