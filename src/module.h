@@ -15,6 +15,7 @@ static int __net_init iproxy_net_init(struct net *net)
 		goto genl_register_family_err;
 	}
 
+#ifdef SERVER /* or client on router */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0)
 	nf_defrag_ipv4_enable();
 #else
@@ -24,11 +25,14 @@ static int __net_init iproxy_net_init(struct net *net)
 		goto nf_defrag_ipv4_enable_err;
 	}
 #endif
+#endif
 
 	return 0;
 
+#ifdef SERVER /* or client on router */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0)
 nf_defrag_ipv4_enable_err:
+#endif
 #endif
 
 genl_register_family_err:
