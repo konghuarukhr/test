@@ -1,23 +1,30 @@
 #include "common.h"
 #include "kgenl.h"
 
+static struct route_table *route_table = NULL;
+
 static char *server_ip = NULL;
 module_param(server_ip, charp, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(server_ip, "server IP");
 static __be32 _server_ip = 0;
 
-static unsigned short port = 0;
-module_param(port, ushort, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(port, "client/server UDP port");
-static __be16 _port = 0;
+static unsigned short client_port = 0;
+module_param(client_port, ushort, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(client_port, "client UDP port");
+static __be16 _client_port = 0;
+
+static unsigned short server_port = 0;
+module_param(server_port, ushort, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(server_port, "server UDP port");
+static __be16 _server_port = 0;
 
 static unsigned short user = 0;
 module_param(user, ushort, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(user, "user");
 static __be16 _user = 0;
 
-static unsigned char password = 0;
-module_param(password, byte, 0);
+static unsigned long password = 0;
+module_param(password, ulong, 0);
 MODULE_PARM_DESC(password, "password");
 
 static unsigned char dns_policy = 0;
@@ -57,24 +64,19 @@ static inline __be32 get_server_ip(void)
 	return _server_ip;
 }
 
-static inline bool is_client_port(__be16 port)
-{
-	return port == _port;
-}
-
 static inline __be16 get_client_port(void)
 {
-	return _port;
+	return _client_port;
 }
 
 static inline bool is_server_port(__be16 port)
 {
-	return port == _port;
+	return port == _server_port;
 }
 
 static inline __be16 get_server_port(void)
 {
-	return _port;
+	return _server_port;
 }
 
 static inline __be16 my_get_user(void)
@@ -82,7 +84,7 @@ static inline __be16 my_get_user(void)
 	return _user;
 }
 
-static inline unsigned char get_password(void)
+static inline unsigned long get_password(void)
 {
 	return password;
 }
@@ -127,9 +129,15 @@ static int params_init(void)
 		return -EINVAL;
 	}
 
-	_port = htons(port);
-	if (!_port) {
-		LOG_ERROR("port param error");
+	_client_port = htons(client_port);
+	if (!_client_port) {
+		LOG_ERROR("client_port param error");
+		return -EINVAL;
+	}
+
+	_server_port = htons(server_port);
+	if (!_server_port) {
+		LOG_ERROR("server_port param error");
 		return -EINVAL;
 	}
 
@@ -191,6 +199,7 @@ static void custom_uninit(void)
 	params_uninit();
 }
 
+
 static inline bool is_noproxy_ip(__be32 ip)
 {
 	return route_table_get_mask(route_table, ip);
@@ -207,6 +216,8 @@ static inline __be32 get_network(__be32 ip, unsigned char mask)
  * we don't use lock to protect it to avoid overhead
  * if we get the wrong local_dns_ip, it will lead to packet drop, and retransmit
  * this packet
+ * this should not be used in router where many clients used different DNS IP go
+ * through the router
  */
 static __be32 local_dns_ip = 0;
 
@@ -220,6 +231,7 @@ static inline __be32 get_local_dns_ip(void)
 {
 	return local_dns_ip;
 }
+
 
 static bool need_client_encap(struct sk_buff *skb)
 {
@@ -295,7 +307,6 @@ static int do_client_encap(struct sk_buff *skb)
 	} else
 		rewrite_dns = false;
 
-	iph = ip_hdr(skb);
 	niph = (struct iphdr *)__skb_push(skb, CAPL);
 	memmove(niph, iph, nhl);
 	skb_reset_network_header(skb);
@@ -306,6 +317,7 @@ static int do_client_encap(struct sk_buff *skb)
 	iprh->protocol = niph->protocol;
 	iprh->user = my_get_user();
 	if (rewrite_dns) {
+		/* dirty set, avaliable in a period, easy implement */
 		set_local_dns_ip(dip);
 		iprh->ip = get_dns_ip();
 	} else
@@ -321,9 +333,6 @@ static int do_client_encap(struct sk_buff *skb)
 	niph->daddr = get_server_ip();
 	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);
 	ip_send_check(niph);
-
-	if (skb->ip_summed == 3)
-		LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
 
 	LOG_DEBUG("protocol %u ip_summed %u csum 0x%08x", iprh->protocol,
 			skb->ip_summed, skb->csum);
@@ -380,8 +389,6 @@ static int do_client_encap(struct sk_buff *skb)
 			inet_proto_csum_replace4(sum, skb, sip, 0, true);
 			break;
 	}
-	if (skb->ip_summed == 3)
-		LOG_INFO("csum: csum_offset checksum 0x%x", *(__be16 *)((skb->csum_start+skb->head)+skb->csum_offset));
 
 	__skb_pull(skb, nhl + CAPL);
 	masq_data(skb, get_password());
@@ -462,7 +469,7 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 		__be32 network = get_network(pip, mask);
 		LOG_DEBUG("%pI4 <- %pI4: add route %pI4/%u", &dip, &sip,
 				&network, mask);
-		//route_table_add(route_table, network, mask);
+		route_table_add(route_table, network, mask);
 	}
 	iph->protocol = iprh->protocol;
 	iph->saddr = rewrite_dns ? dns_ip : pip;

@@ -8,7 +8,7 @@
 #include "ugenl.h"
 
 
-static struct route_table *route_table = NULL;
+static struct route_table *route_table;
 
 static int clear_route(struct sk_buff *skb, struct genl_info *info)
 {

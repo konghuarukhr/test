@@ -42,7 +42,7 @@ static inline bool skb_frag_must_loop(struct page *p)
  * Masq should be based on each byte, so you can demasq it without any position
  * info later.
  */
-static inline void masq_bytes(void *data, int len, __u8 passwd)
+static inline void masq_bytes(void *data, int len, unsigned long passwd)
 {
 	return;
 /*
@@ -67,7 +67,7 @@ static inline void masq_bytes(void *data, int len, __u8 passwd)
  * Masq is based on each byte, so you can demasq it without any position info
  * now.
  */
-static inline void demasq_bytes(void *data, int len, __u8 passwd)
+static inline void demasq_bytes(void *data, int len, unsigned long passwd)
 {
 	return;
 /*
@@ -96,7 +96,8 @@ static inline __be16 recalc_csum(__be16 csum, int bytes) {
 }
 
 static void process_data(struct sk_buff *skb,
-		void (*do_process)(void *, int, __u8), __u8 passwd)
+		void (*do_process)(void *, int, unsigned long),
+		unsigned long passwd)
 {
 	int i;
 	int start;
@@ -136,12 +137,12 @@ static void process_data(struct sk_buff *skb,
 	}
 }
 
-void masq_data(struct sk_buff *skb, __u8 passwd)
+void masq_data(struct sk_buff *skb, unsigned long passwd)
 {
 	process_data(skb, masq_bytes, passwd);
 }
 
-void demasq_data(struct sk_buff *skb, __u8 passwd)
+void demasq_data(struct sk_buff *skb, unsigned long passwd)
 {
 	process_data(skb, demasq_bytes, passwd);
 }

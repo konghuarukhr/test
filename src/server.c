@@ -5,10 +5,10 @@
 
 static struct xlate_table *xlate_table = NULL;
 
-static char *server_ip = NULL;
-module_param(server_ip, charp, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(server_ip, "local IP for receiving packets from client");
-static __be32 _server_ip = 0;
+static char *local_ip = NULL;
+module_param(local_ip, charp, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(local_ip, "local IP for receiving packets from client");
+static __be32 _local_ip = 0;
 
 static unsigned short server_port = 0;
 module_param(server_port, ushort, S_IRUSR | S_IRGRP | S_IROTH);
@@ -25,17 +25,15 @@ static unsigned int vip_number = 0;
 module_param(vip_number, uint, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(vip_number, "virtual and unreachable client IP total number");
 
-/**
- * TODO: supports multi proxies
- */
-static inline __be32 get_server_ip(void)
+
+static inline __be32 get_local_ip(void)
 {
-	return _server_ip;
+	return _local_ip;
 }
 
-static inline bool is_server_ip(__be32 ip)
+static inline bool is_local_ip(__be32 ip)
 {
-	return ip == _server_ip;
+	return ip == _local_ip;
 }
 
 static inline __be16 get_server_port(void)
@@ -70,10 +68,10 @@ static inline unsigned char get_passwd(__be16 user)
 
 static int params_init(void)
 {
-	if (server_ip != NULL)
-		_server_ip = in_aton(server_ip);
-	if (_server_ip == 0) {
-		LOG_ERROR("server_ip param error");
+	if (local_ip != NULL)
+		_local_ip = in_aton(local_ip);
+	if (_local_ip == 0) {
+		LOG_ERROR("local_ip param error");
 		return -EINVAL;
 	}
 
@@ -160,7 +158,7 @@ static bool need_server_decap(struct sk_buff *skb)
 	struct iprhdr *iprh;
 
 	iph = ip_hdr(skb);
-	if (!is_server_ip(iph->daddr))
+	if (!is_local_ip(iph->daddr))
 		return false;
 	if (iph->protocol != IPPROTO_UDP)
 		return false;
@@ -358,7 +356,7 @@ static int do_server_encap(struct sk_buff *skb)
 	udph->check = 0;
 
 	niph->protocol = IPPROTO_UDP;
-	niph->saddr = get_server_ip();
+	niph->saddr = get_local_ip();
 	niph->daddr = xip;
 	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);
 	ip_send_check(niph);

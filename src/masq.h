@@ -3,7 +3,7 @@
 
 #include "common.h"
 
-void masq_data(struct sk_buff *skb, u8 passwd);
-void demasq_data(struct sk_buff *skb, u8 passwd);
+void masq_data(struct sk_buff *skb, unsigned long passwd);
+void demasq_data(struct sk_buff *skb, unsigned long passwd);
 
 #endif
