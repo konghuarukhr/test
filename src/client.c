@@ -448,7 +448,7 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	if (!is_dns_no_special() && iph->protocol == IPPROTO_UDP &&
 			pskb_may_pull(skb, nhl + CAPL + sizeof(struct udphdr)) &&
 			*(__be16 *)(skb_transport_header(skb) + CAPL +
-				offsetof(struct udphdr, dest)) == DNS_PORT) {
+				offsetof(struct udphdr, source)) == DNS_PORT) {
 		rewrite_dns = true;
 		LOG_DEBUG("%pI4 <- %pI4: rewrite DNS IP", &dip, &sip);
 	} else
