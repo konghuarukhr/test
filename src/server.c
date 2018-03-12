@@ -3,6 +3,7 @@
 
 #define VIP_EXPIRE 300
 
+static struct route_table *route_table = NULL;
 static struct xlate_table *xlate_table = NULL;
 
 static char *local_ip = NULL;
