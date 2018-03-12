@@ -44,8 +44,6 @@ static inline bool skb_frag_must_loop(struct page *p)
  */
 static inline void masq_bytes(void *data, int len, unsigned long passwd)
 {
-	return;
-/*
 	int i;
 	__u8 *b;
 
@@ -54,7 +52,6 @@ static inline void masq_bytes(void *data, int len, unsigned long passwd)
 		*b = ~*b + passwd;
 		b++;
 	}
-	*/
 }
 
 /**
@@ -69,8 +66,6 @@ static inline void masq_bytes(void *data, int len, unsigned long passwd)
  */
 static inline void demasq_bytes(void *data, int len, unsigned long passwd)
 {
-	return;
-/*
 	int i;
 	__u8 *b;
 
@@ -79,7 +74,6 @@ static inline void demasq_bytes(void *data, int len, unsigned long passwd)
 		*b = ~*b - passwd;
 		b++;
 	}
-	*/
 }
 
 /**
