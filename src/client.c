@@ -327,68 +327,22 @@ static int do_client_encap(struct sk_buff *skb)
 	udph->source = get_client_port();
 	udph->dest = get_server_port();
 	udph->len = htons(ntohs(niph->tot_len) - nhl + CAPL);
-	udph->check = 0;
 
 	niph->protocol = IPPROTO_UDP;
 	niph->daddr = get_server_ip();
 	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);
 	ip_send_check(niph);
 
-	LOG_DEBUG("protocol %u ip_summed %u csum 0x%08x", iprh->protocol,
-			skb->ip_summed, skb->csum);
-	switch (iprh->protocol) {
-		case IPPROTO_UDP:
-			if (!pskb_may_pull_iprhdr_ext(skb,
-						sizeof(struct udphdr))) {
-				LOG_ERROR("%pI4 -> %pI4: UDP too short", &sip,
-						&dip);
-				return -EFAULT;
-			}
-			sum = (__sum16 *)(skb_transport_header(skb) + CAPL +
-				offsetof(struct udphdr, check));
-			if (!*sum && skb->ip_summed != CHECKSUM_PARTIAL)
-				break;
-			inet_proto_csum_replace4(sum, skb, sip, 0, true);
-			if (rewrite_dns)
-				inet_proto_csum_replace4(sum, skb, dip,
-						get_dns_ip(), true);
-			if (!*sum)
-				*sum = CSUM_MANGLED_0;
-			break;
-		case IPPROTO_UDPLITE:
-			if (!pskb_may_pull_iprhdr_ext(skb,
-						sizeof(struct udphdr))) {
-				LOG_ERROR("%pI4 -> %pI4: UDPLITE too short",
-						&sip, &dip);
-				return -EFAULT;
-			}
-			sum = (__sum16 *)(skb_transport_header(skb) + CAPL +
-				offsetof(struct udphdr, check));
-			inet_proto_csum_replace4(sum, skb, sip, 0, true);
-			break;
-		case IPPROTO_TCP:
-			if (!pskb_may_pull_iprhdr_ext(skb,
-						sizeof(struct tcphdr))) {
-				LOG_ERROR("%pI4 -> %pI4: TCP too short", &sip,
-						&dip);
-				return -EFAULT;
-			}
-			sum = (__sum16 *)(skb_transport_header(skb) + CAPL +
-				offsetof(struct tcphdr, check));
-			inet_proto_csum_replace4(sum, skb, sip, 0, true);
-			break;
-		case IPPROTO_DCCP:
-			if (!pskb_may_pull_iprhdr_ext(skb,
-						sizeof(struct tcphdr))) {
-				LOG_ERROR("%pI4 -> %pI4: DCCP too short", &sip,
-						&dip);
-				return -EFAULT;
-			}
-			sum = (__sum16 *)(skb_transport_header(skb) + CAPL +
-				offsetof(struct dccp_hdr, dccph_checksum));
-			inet_proto_csum_replace4(sum, skb, sip, 0, true);
-			break;
-	}
+#ifdef NOCHECK
+	udph->check = 0;
+	skb->ip_summed = CHECKSUM_NONE;
+#else
+	udph->check = ~csum_tcpudp_magic(niph->saddr, niph->daddr, udph->len,
+			IPPROTO_UDP, 0);
+	skb->ip_summed = CHECKSUM_PARTIAL;
+	skb->csum_start = skb_transport_header(skb) - skb->head;
+	skb->csum_offset = offsetof(struct udphdr, check);
+#endif
 
 	__skb_pull(skb, nhl + CAPL);
 	masq_data(skb, get_password());
