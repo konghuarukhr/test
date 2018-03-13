@@ -62,7 +62,7 @@ static inline unsigned int get_vip_number(void)
 	return vip_number;
 }
 
-static inline unsigned char get_passwd(__be16 user)
+static inline unsigned long get_passwd(__be16 user)
 {
 	return 0;
 }
