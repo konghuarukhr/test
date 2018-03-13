@@ -184,34 +184,18 @@ static int do_server_decap(struct sk_buff *skb)
 	int nhl;
 	struct iphdr *iph, *niph;
 	struct udphdr *udph;
-	struct iprhdr *iprh;
-	__be32 xvip;
-	__be32 dip;
-	__be16 user;
 	struct tcphdr *tcph;
 	struct dccp_hdr *dccph;
+	struct iprhdr *iprh;
+	__be32 sip;
+	__be32 dip;
+	__be32 pip;
+	__be32 vip;
+	__be16 user;
+	__u16 udplitecov;
+	__wsum csum;
 
 	nhl = skb_network_header_len(skb);
-
-	iph = ip_hdr(skb);
-	udph = udp_hdr(skb);
-	iprh = ipr_hdr(skb);
-
-	dip = iprh->ip;
-	user = iprh->user;
-
-	LOG_DEBUG("%pI4:%u:%u -> %pI4: decap", &iph->saddr,
-			ntohs(udph->source), ntohs(user), &iph->daddr);
-	err = xlate_table_lookup_vip(xlate_table, iph->saddr, udph->source,
-			user, &xvip);
-	if (err) {
-		LOG_ERROR("failed to lookup xlate vip by ip %p4I port %u user %u: %d",
-				&iph->saddr, ntohs(udph->source), ntohs(user),
-				err);
-		return err;
-	}
-	LOG_DEBUG("found xlate vip %pI4 by ip %pI4 port %u user %u", &xvip,
-			&iph->saddr, ntohs(udph->source), ntohs(user));
 
 	__skb_pull(skb, nhl + CAPL);
 	LOG_DEBUG("before masq: 0x%02x", *(__u8 *)skb->data);
@@ -219,71 +203,105 @@ static int do_server_decap(struct sk_buff *skb)
 	LOG_DEBUG("after masq: 0x%02x", *(__u8 *)skb->data);
 	__skb_push(skb, nhl + CAPL);
 
+	iph = ip_hdr(skb);
+	udph = udp_hdr(skb);
+	iprh = ipr_hdr(skb);
+
+	sip = iph->saddr;
+	dip = iph->daddr;
+	pip = iprh->ip;
+	user = iprh->user;
+
+	LOG_DEBUG("%pI4 -> %pI4: decap", &sip, &dip);
+	err = xlate_table_lookup_vip(xlate_table, sip, udph->source, user, &vip);
+	if (err) {
+		LOG_ERROR("%pI4 -> %pI4: failed to lookup xlate vip by ip %p4I port %u user %u: %d",
+				&sip, &dip, &sip, ntohs(udph->source),
+				ntohs(user), err);
+		return err;
+	}
+	LOG_DEBUG("%pI4 -> %pI4: found xlate vip %pI4 by ip %pI4 port %u user %u",
+			&sip, &dip, &vip, &sip, ntohs(udph->source),
+			ntohs(user));
+
 	iph->protocol = iprh->protocol;
-	iph->saddr = xvip;
-	iph->daddr = dip;
-	LOG_DEBUG("dip %pI4 %u", &dip, iph->protocol);
+	iph->saddr = vip;
+	iph->daddr = pip;
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
 	ip_send_check(iph);
+	LOG_DEBUG("%pI4 -> %pI4: %pI4 -> %pI4 protocol %u", &sip, &dip, &vip,
+			&pip, iph->protocol);
 
 	niph = (struct iphdr *)__skb_pull(skb, CAPL);
 	memmove(niph, iph, nhl);
 	skb_reset_network_header(skb);
 	skb_set_transport_header(skb, nhl);
 
-	LOG_DEBUG("protocol %u ip_summed %u", niph->protocol, skb->ip_summed);
 	switch (niph->protocol) {
 		case IPPROTO_UDP:
 			if (!pskb_may_pull(skb, nhl + sizeof(struct udphdr))) {
 				LOG_ERROR("%pI4 -> %pI4: UDP too short",
-						&niph->saddr,
-						&niph->daddr);
-				return -EINVAL;
+						&vip, &pip);
+				return -EFAULT;
 			}
 			udph = udp_hdr(skb);
-			if (!udph->check)
-				break;
-			csum_replace4(&udph->check, 0, xvip);
-			if (!udph->check)
-				udph->check = CSUM_MANGLED_0;
-			skb->ip_summed = CHECKSUM_NONE;
+			udph->check = ~csum_tcpudp_magic(vip, pip, udph->len,
+					IPPROTO_UDP, 0);
+			skb->ip_summed = CHECKSUM_PARTIAL;
+			skb->csum_start = skb_transport_header(skb) - skb->head;
+			skb->csum_offset = offsetof(struct udphdr, check);
 			break;
 		case IPPROTO_UDPLITE:
 			if (!pskb_may_pull(skb, nhl + sizeof(struct udphdr))) {
 				LOG_ERROR("%pI4 -> %pI4: UDPLITE too short",
-						&niph->saddr,
-						&niph->daddr);
-				return -EINVAL;
+						&vip, &pip);
+				return -EFAULT;
 			}
 			udph = udp_hdr(skb);
-			csum_replace4(&udph->check, 0, xvip);
+			udplitecov = ntohs(udph->len);
+			if (!udplitecov)
+				udplitecov = skb->len -
+					skb_transport_offset(skb);
+			else if (udplitecov > skb->len -
+					skb_transport_offset(skb)) {
+				LOG_ERROR("%pI4 -> %pI4: UDPLITE coverage error",
+						&vip, &pip);
+				return -EFAULT;
+			}
+			csum = skb_checksum(skb, skb_transport_offset(skb),
+					udplitecov, 0);
+			udph->check = csum_tcpudp_magic(vip, pip, udph->len,
+					IPPROTO_UDP, csum);
+			if (!udph->check)
+				udph->check = CSUM_MANGLED_0;
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 		case IPPROTO_TCP:
 			if (!pskb_may_pull(skb, nhl + sizeof(struct tcphdr))) {
 				LOG_ERROR("%pI4 -> %pI4: TCP too short",
-						&niph->saddr,
-						&niph->daddr);
-				return -EINVAL;
+						&vip, &pip);
+				return -EFAULT;
 			}
 			tcph = tcp_hdr(skb);
-			csum_replace4(&tcph->check, 0, xvip);
-			skb->ip_summed = CHECKSUM_NONE;
+			tcph->check = ~csum_tcpudp_magic(vip, pip, tcph->len,
+					IPPROTO_TCP, 0);
+			skb->ip_summed = CHECKSUM_PARTIAL;
+			skb->csum_start = skb_transport_header(skb) - skb->head;
+			skb->csum_offset = offsetof(struct tcphdr, check);
 			break;
 		case IPPROTO_DCCP:
 			if (!pskb_may_pull(skb, nhl + sizeof(struct dccp_hdr))) {
 				LOG_ERROR("%pI4 -> %pI4: DCCP too short",
-						&niph->saddr,
-						&niph->daddr);
+						&vip, &pip);
 				return -EINVAL;
 			}
 			dccph = dccp_hdr(skb);
-			csum_replace4(&dccph->dccph_checksum, 0, xvip);
+			csum_replace4(&dccph->dccph_checksum, 0, vip);
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 	}
 
-	LOG_DEBUG("%pI4 -> %pI4: go to server", &niph->saddr, &niph->daddr);
+	LOG_DEBUG("%pI4 -> %pI4: go to server", &vip, &pip);
 	return 0;
 }
 
@@ -309,42 +327,44 @@ static int do_server_encap(struct sk_buff *skb)
 	struct iphdr *iph, *niph;
 	struct udphdr *udph;
 	struct iprhdr *iprh;
-	__be32 vip;
+	__be32 sip;
+	__be32 dip;
+	__be32 xip;
+	__be32 lip;
 	__u8 *sum;
 
+	lip = get_local_ip();
+	nhl = skb_network_header_len(skb);
+
 	iph = ip_hdr(skb);
-	LOG_DEBUG("%pI4 -> %pI4: encap", &iph->saddr, &iph->daddr);
-	vip = iph->daddr;
-	err = xlate_table_find_ipport(xlate_table, vip, &xip, &xport,
-			&xuser);
+	sip = iph->saddr;
+	dip = iph->daddr;
+	LOG_DEBUG("%pI4 <- %pI4: encap", &dip, &sip);
+
+	err = xlate_table_find_ipport(xlate_table, dip, &xip, &xport, &xuser);
 	if (err) {
-		LOG_ERROR("failed to find xlate ipport by vip %pI4: %d",
-				&vip, err);
+		LOG_ERROR("%pI4 <- %pI4: failed to find xlate ip port: %d",
+				&dip, &sip, err);
 		return err;
 	}
-	LOG_DEBUG("found xlate ip %pI4 port %u user %u by vip %pI4", &xip,
-			ntohs(xport), ntohs(xuser), &vip);
+	LOG_DEBUG("%pI4 <- %pI4: found xlate ip %pI4 port %u user %u",
+			&dip, &sip, &xip, ntohs(xport), ntohs(xuser));
 
 	err = skb_cow(skb, CAPL);
 	if (err) {
-		LOG_ERROR("failed to do skb_cow on packet vip %pI4: %d",
-				&vip, err);
+		LOG_ERROR("%pI4 <- %pI4: failed to do skb_cow: %d",
+				&dip, &sip, err);
 		return err;
 	}
 
-	nhl = skb_network_header_len(skb);
-
-	__skb_pull(skb, nhl);
-	masq_data(skb, get_passwd(xuser));
-
 	iph = ip_hdr(skb);
-	niph = (struct iphdr *)__skb_push(skb, nhl + CAPL);
+	niph = (struct iphdr *)__skb_push(skb, CAPL);
 	memmove(niph, iph, nhl);
 	skb_reset_network_header(skb);
 	skb_set_transport_header(skb, nhl);
 
 	iprh = ipr_hdr(skb);
-	iprh->type = IPR_S_C;
+	set_ipr_sc(iprh);
 	iprh->protocol = niph->protocol;
 	iprh->mask = htons(route_table_get_mask(route_table, niph->saddr));
 	iprh->ip = niph->saddr;
@@ -356,10 +376,21 @@ static int do_server_encap(struct sk_buff *skb)
 	udph->check = 0;
 
 	niph->protocol = IPPROTO_UDP;
-	niph->saddr = get_local_ip();
+	niph->saddr = lip;
 	niph->daddr = xip;
 	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);
 	ip_send_check(niph);
+
+#ifdef NOCHECK
+	udph->check = 0;
+	skb->ip_summed = CHECKSUM_NONE;
+#else
+	udph->check = ~csum_tcpudp_magic(niph->saddr, niph->daddr, udph->len,
+			IPPROTO_UDP, 0);
+	skb->ip_summed = CHECKSUM_PARTIAL;
+	skb->csum_start = skb_transport_header(skb) - skb->head;
+	skb->csum_offset = offsetof(struct udphdr, check);
+#endif
 
 	LOG_DEBUG("protocol %u ip_summed %u", iprh->protocol, skb->ip_summed);
 	switch (iprh->protocol) {
@@ -401,8 +432,11 @@ static int do_server_encap(struct sk_buff *skb)
 			break;
 	}
 
-	LOG_DEBUG("%pI4 -> %pI4:%u: go to client", &niph->saddr, &niph->daddr,
-			ntohs(udph->dest));
+	__skb_pull(skb, nhl + CAPL);
+	masq_data(skb, get_passwd(xuser));
+	__skb_push(skb, nhl + CAPL);
+
+	LOG_DEBUG("%pI4 <- %pI4: go to client", &xip, &lip);
 	return 0;
 }
 
