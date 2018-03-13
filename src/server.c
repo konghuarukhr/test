@@ -197,6 +197,9 @@ static int do_server_decap(struct sk_buff *skb)
 
 	nhl = skb_network_header_len(skb);
 
+	iprh = ipr_hdr(skb);
+	user = iprh->user;
+
 	__skb_pull(skb, nhl + CAPL);
 	LOG_DEBUG("before masq: 0x%02x", *(__u8 *)skb->data);
 	demasq_data(skb, get_passwd(user));
@@ -210,7 +213,6 @@ static int do_server_decap(struct sk_buff *skb)
 	sip = iph->saddr;
 	dip = iph->daddr;
 	pip = iprh->ip;
-	user = iprh->user;
 
 	LOG_DEBUG("%pI4 -> %pI4: decap", &sip, &dip);
 	err = xlate_table_lookup_vip(xlate_table, sip, udph->source, user, &vip);
@@ -283,8 +285,9 @@ static int do_server_decap(struct sk_buff *skb)
 				return -EFAULT;
 			}
 			tcph = tcp_hdr(skb);
-			tcph->check = ~csum_tcpudp_magic(vip, pip, tcph->len,
-					IPPROTO_TCP, 0);
+			tcph->check = ~csum_tcpudp_magic(vip, pip, skb->len -
+					skb_transport_offset(skb), IPPROTO_TCP,
+					0);
 			skb->ip_summed = CHECKSUM_PARTIAL;
 			skb->csum_start = skb_transport_header(skb) - skb->head;
 			skb->csum_offset = offsetof(struct tcphdr, check);
@@ -321,9 +324,6 @@ static int do_server_encap(struct sk_buff *skb)
 {
 	int err;
 	int nhl;
-	__be32 xip;
-	__be16 xport;
-	__be16 xuser;
 	struct iphdr *iph, *niph;
 	struct udphdr *udph;
 	struct iprhdr *iprh;
@@ -331,7 +331,8 @@ static int do_server_encap(struct sk_buff *skb)
 	__be32 dip;
 	__be32 xip;
 	__be32 lip;
-	__u8 *sum;
+	__be16 xport;
+	__be16 xuser;
 
 	lip = get_local_ip();
 	nhl = skb_network_header_len(skb);
@@ -373,7 +374,6 @@ static int do_server_encap(struct sk_buff *skb)
 	udph->source = get_server_port();
 	udph->dest = xport;
 	udph->len = htons(ntohs(niph->tot_len) + CAPL - nhl);
-	udph->check = 0;
 
 	niph->protocol = IPPROTO_UDP;
 	niph->saddr = lip;
@@ -381,62 +381,14 @@ static int do_server_encap(struct sk_buff *skb)
 	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);
 	ip_send_check(niph);
 
-#ifdef NOCHECK
 	udph->check = 0;
 	skb->ip_summed = CHECKSUM_NONE;
-#else
-	udph->check = ~csum_tcpudp_magic(niph->saddr, niph->daddr, udph->len,
-			IPPROTO_UDP, 0);
-	skb->ip_summed = CHECKSUM_PARTIAL;
-	skb->csum_start = skb_transport_header(skb) - skb->head;
-	skb->csum_offset = offsetof(struct udphdr, check);
-#endif
-
-	LOG_DEBUG("protocol %u ip_summed %u", iprh->protocol, skb->ip_summed);
-	switch (iprh->protocol) {
-		case IPPROTO_UDP:
-			if (!pskb_may_pull_iprhdr_ext(skb, sizeof(struct udphdr))) {
-				LOG_ERROR("UDP header offset exceed");
-				return -EFAULT;
-			}
-			sum = skb_transport_header(skb) + CAPL + offsetof(struct udphdr, check);
-			if (!*(__sum16 *)sum && skb->ip_summed != CHECKSUM_PARTIAL)
-				break;
-			inet_proto_csum_replace4((__sum16 *)sum, skb, vip, 0, true);
-			if (!*(__sum16 *)sum)
-				*(__sum16 *)sum = CSUM_MANGLED_0;
-			break;
-		case IPPROTO_UDPLITE:
-			if (!pskb_may_pull_iprhdr_ext(skb, sizeof(struct udphdr))) {
-				LOG_ERROR("UDPLITE header offset exceed");
-				return -EFAULT;
-			}
-			sum = skb_transport_header(skb) + CAPL + offsetof(struct udphdr, check);
-			inet_proto_csum_replace4((__sum16 *)sum, skb, vip, 0, true);
-			break;
-		case IPPROTO_TCP:
-			if (!pskb_may_pull_iprhdr_ext(skb, sizeof(struct tcphdr))) {
-				LOG_ERROR("TCP header offset exceed");
-				return -EFAULT;
-			}
-			sum = skb_transport_header(skb) + CAPL + offsetof(struct tcphdr, check);
-			inet_proto_csum_replace4((__sum16 *)sum, skb, vip, 0, true);
-			break;
-		case IPPROTO_DCCP:
-			if (!pskb_may_pull_iprhdr_ext(skb, sizeof(struct tcphdr))) {
-				LOG_ERROR("DCCP header offset exceed");
-				return -EFAULT;
-			}
-			sum = skb_transport_header(skb) + CAPL + offsetof(struct dccp_hdr, dccph_checksum);
-			inet_proto_csum_replace4((__sum16 *)sum, skb, vip, 0, true);
-			break;
-	}
 
 	__skb_pull(skb, nhl + CAPL);
 	masq_data(skb, get_passwd(xuser));
 	__skb_push(skb, nhl + CAPL);
 
-	LOG_DEBUG("%pI4 <- %pI4: go to client", &xip, &lip);
+	LOG_DEBUG("%pI4 <- %pI4: go to client", &niph->daddr, &niph->saddr);
 	return 0;
 }
 

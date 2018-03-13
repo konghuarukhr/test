@@ -283,7 +283,6 @@ static int do_client_encap(struct sk_buff *skb)
 	__be32 sip;
 	__be32 dip;
 	bool rewrite_dns;
-	__sum16 *sum;
 
 	nhl = skb_network_header_len(skb);
 
@@ -333,16 +332,8 @@ static int do_client_encap(struct sk_buff *skb)
 	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);
 	ip_send_check(niph);
 
-#ifdef NOCHECK
 	udph->check = 0;
 	skb->ip_summed = CHECKSUM_NONE;
-#else
-	udph->check = ~csum_tcpudp_magic(niph->saddr, niph->daddr, udph->len,
-			IPPROTO_UDP, 0);
-	skb->ip_summed = CHECKSUM_PARTIAL;
-	skb->csum_start = skb_transport_header(skb) - skb->head;
-	skb->csum_offset = offsetof(struct udphdr, check);
-#endif
 
 	__skb_pull(skb, nhl + CAPL);
 	masq_data(skb, get_password());
@@ -384,16 +375,11 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	int nhl;
 	struct iphdr *iph, *niph;
 	struct iprhdr *iprh;
-	struct udphdr *udph;
-	struct tcphdr *tcph;
-	struct dccp_hdr *dccph;
 	__be32 sip;
 	__be32 dip;
 	__be32 pip;
 	bool rewrite_dns;
-	__be32 dns_ip;
 
-	dns_ip = get_local_dns_ip();
 
 	nhl = skb_network_header_len(skb);
 
@@ -426,67 +412,18 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 		route_table_add(route_table, network, mask);
 	}
 	iph->protocol = iprh->protocol;
-	iph->saddr = rewrite_dns ? dns_ip : pip;
+	iph->saddr = rewrite_dns ? get_local_dns_ip() : pip;
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
-	ip_send_check(iph);
+	//ip_send_check(iph);
+
+	//skb->ip_summed = CHECKSUM_COMPLETE;
 
 	niph = (struct iphdr *)__skb_pull(skb, CAPL);
 	memmove(niph, iph, nhl);
 	skb_reset_network_header(skb);
 	skb_set_transport_header(skb, nhl);
 
-	LOG_DEBUG("protocol %u ip_summed %u csum 0x%08x", niph->protocol,
-			skb->ip_summed, skb->csum);
-	switch (niph->protocol) {
-		case IPPROTO_UDP:
-			if (!pskb_may_pull(skb, nhl + sizeof(struct udphdr))) {
-				LOG_ERROR("%pI4 <- %pI4: UDP too short", &dip,
-						&sip);
-				return -EFAULT;
-			}
-			udph = udp_hdr(skb);
-			if (!udph->check)
-				break;
-			csum_replace4(&udph->check, 0, dip);
-			if (rewrite_dns)
-				csum_replace4(&udph->check, pip, dns_ip);
-			if (!udph->check)
-				udph->check = CSUM_MANGLED_0;
-			skb->ip_summed = CHECKSUM_NONE;
-			break;
-		case IPPROTO_UDPLITE:
-			if (!pskb_may_pull(skb, nhl + sizeof(struct udphdr))) {
-				LOG_ERROR("%pI4 <- %pI4: UDPLITE too short",
-						&dip, &sip);
-				return -EFAULT;
-			}
-			udph = udp_hdr(skb);
-			csum_replace4(&udph->check, 0, dip);
-			skb->ip_summed = CHECKSUM_NONE;
-			break;
-		case IPPROTO_TCP:
-			if (!pskb_may_pull(skb, nhl + sizeof(struct tcphdr))) {
-				LOG_ERROR("%pI4 <- %pI4: TCP too short", &dip,
-						&sip);
-				return -EFAULT;
-			}
-			tcph = tcp_hdr(skb);
-			csum_replace4(&tcph->check, 0, dip);
-			skb->ip_summed = CHECKSUM_NONE;
-			break;
-		case IPPROTO_DCCP:
-			if (!pskb_may_pull(skb, nhl + sizeof(struct dccp_hdr))) {
-				LOG_ERROR("%pI4 <- %pI4: DCCP too short", &dip,
-						&sip);
-				return -EFAULT;
-			}
-			dccph = dccp_hdr(skb);
-			csum_replace4(&dccph->dccph_checksum, 0, dip);
-			skb->ip_summed = CHECKSUM_NONE;
-			break;
-	}
-
-	LOG_DEBUG("%pI4 <- %pI4: received", &dip, &sip);
+	LOG_DEBUG("%pI4 <- %pI4: received", &niph->daddr, &niph->saddr);
 	return 0;
 }
 
