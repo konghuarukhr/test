@@ -143,7 +143,7 @@ int route_table_delete(struct route_table *rt, __be32 network,
 	return 0;
 }
 
-unsigned char route_table_get_mask(struct route_table *rt, __be32 ip)
+__u8 route_table_get_mask(struct route_table *rt, __be32 ip)
 {
 	int i;
 

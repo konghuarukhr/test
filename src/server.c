@@ -247,11 +247,17 @@ static int do_server_decap(struct sk_buff *skb)
 				return -EFAULT;
 			}
 			udph = udp_hdr(skb);
-			udph->check = ~csum_tcpudp_magic(vip, pip, udph->len,
+			LOG_DEBUG("XXZ 0x%04x", udph->check);
+			LOG_DEBUG("XXY %pI4 %pI4 %u", &vip, &pip, udph->len);
+			LOG_DEBUG("XXY %pI4 %pI4 %u", &vip, &pip, ntohs(udph->len));
+			LOG_DEBUG("XXX %u %u", skb->csum_start, skb->csum_offset);
+			udph->check = ~csum_tcpudp_magic(vip, pip, ntohs(udph->len),
 					IPPROTO_UDP, 0);
 			skb->ip_summed = CHECKSUM_PARTIAL;
 			skb->csum_start = skb_transport_header(skb) - skb->head;
 			skb->csum_offset = offsetof(struct udphdr, check);
+			LOG_DEBUG("XXY 0x%04x", udph->check);
+			LOG_DEBUG("XXX %u %u", skb->csum_start, skb->csum_offset);
 			break;
 		case IPPROTO_UDPLITE:
 			if (!pskb_may_pull(skb, nhl + sizeof(struct udphdr))) {

@@ -7,11 +7,11 @@
 #define AUTHOR "Dustin Zheng <konghuarukhr@gmail.com>"
 
 #ifdef _IPR_CLIENT
-#define GENL_FAMILY_NAME "IPROXY_CLIENT"
+#define IPR_GENL_NAME "IPROXY_CLIENT"
 #define ALIAS "iproxy_client"
 #define DESCRIPTION "An IP proxy client"
 #else /* SERVER */
-#define GENL_FAMILY_NAME "IPROXY_SERVER"
+#define IPR_GENL_NAME "IPROXY_SERVER"
 #define ALIAS "iproxy_server"
 #define DESCRIPTION "An IP proxy server"
 #endif
