@@ -9,15 +9,19 @@
 
 
 static struct route_table *route_table;
+static struct genl_family iproxy_genl_family;
 
 static int clear_route(struct sk_buff *skb, struct genl_info *info)
 {
+	LOG_DEBUG("in");
 	route_table_clear(route_table);
+	LOG_DEBUG("out");
 	return 0;
 }
 
 static int add_route(struct sk_buff *skb, struct genl_info *info)
 {
+	LOG_DEBUG("");
 	struct nlattr *network_attr = info->attrs[IPR_ATTR_NETWORK];
 	struct nlattr *mask_attr = info->attrs[IPR_ATTR_MASK];
 	if (network_attr && mask_attr) {
@@ -31,6 +35,7 @@ static int add_route(struct sk_buff *skb, struct genl_info *info)
 
 static int delete_route(struct sk_buff *skb, struct genl_info *info)
 {
+	LOG_DEBUG("");
 	struct nlattr *network_attr = info->attrs[IPR_ATTR_NETWORK];
 	struct nlattr *mask_attr = info->attrs[IPR_ATTR_MASK];
 	if (network_attr && mask_attr) {
@@ -44,13 +49,15 @@ static int delete_route(struct sk_buff *skb, struct genl_info *info)
 
 static int show_route(struct sk_buff *skb, struct genl_info *info)
 {
+	LOG_DEBUG("");
 	return -ENOTSUPP;
 }
 
-static int find_route(struct sk_buff *skb, struct genl_info *info)
+static int find_route(struct sk_buff *skb_in, struct genl_info *info)
 {
+	LOG_DEBUG("");
 	int err;
-	struct sk_buff *skb2;
+	struct sk_buff *skb_out;
 	struct nlattr *network_attr = info->attrs[IPR_ATTR_NETWORK];
 	if (!network_attr) {
 		err = -EINVAL;
@@ -60,39 +67,37 @@ static int find_route(struct sk_buff *skb, struct genl_info *info)
 	__be32 network = nla_get_be32(network_attr);
 	__u8 mask = route_table_get_mask(route_table, network);
 
-	skb2 = genlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
-	if (!skb2) {
+	skb_out = genlmsg_new(nla_total_size(sizeof(__u8)), GFP_KERNEL);
+	if (!skb_out) {
 		err = -ENOMEM;
 		goto genlmsg_new_err;
 	}
 
-/*构建消息头，函数原型是 
-        genlmsgput(struct sk_buff *,int pid,int seq_number, 
-                struct genl_family *,int flags,u8 command_index); 
-        */ 
-	msg_head = genlmsg_put(skb_out, NETLINK_CB(skb_in).portid,
+	void *msg_head = genlmsg_put(skb_out, NETLINK_CB(skb_in).portid,
 			info->snd_seq, &iproxy_genl_family, 0,
 			IPR_CMD_GET_ROUTE);
 	if (!msg_head) {
+		err = -EMSGSIZE;
+		goto genlmsg_put_err;
 	}
-	genlmsg_put(skb2, 0, info->snd_seq+1, &doc_exmpl_genl_family,0,DOC_EXMPL_C_ECHO);
-if(msg_hdr == NULL){  
-                rc = -ENOMEM;  
-                goto error;  
-        }  
-  
-        //填充具体的netlink attribute:DOC_EXMPL_A_MSG，这是实际要传的数据  
-        rc = nla_put_string(skb,DOC_EXMPL_A_MSG,"Hello World from kernel space!");  
-        if(rc != 0) goto error;  
-  
-        genlmsg_end(skb,msg_hdr);//消息构建完成  
-        //单播发送给用户空间的某个进程  
-        rc = genlmsg_unicast(genl_info_net(info),skb,info->snd_pid);  
-        if(rc != 0){  
-                printk("Unicast to process:%d failed!\n",info->snd_pid);  
-                goto error;  
-        }  
-        return 0; 
+
+	err = nla_put_u8(skb_out, IPR_ATTR_MASK, mask);
+	if (err) {
+		goto nla_put_mask_err;
+	}
+
+	genlmsg_end(skb_out, msg_head);
+	genlmsg_unicast(genl_info_net(info), skb_out, info->snd_portid);
+
+	return 0;
+
+nla_put_mask_err:
+genlmsg_put_err:
+	nlmsg_free(skb_out);
+genlmsg_new_err:
+network_attr_err:
+	//netlink_ack(skb_in, nlmsg_hdr(skb_in), -EINVAL, NULL);
+	return err;
 }
 
 static struct nla_policy iproxy_genl_policy[IPR_ATTR_MAX + 1] = {
@@ -124,7 +129,7 @@ static const struct genl_ops iproxy_genl_ops[] = {
 	},
 	{
 		.cmd = IPR_CMD_GET_ROUTE,
-		.doit = get_route,
+		.doit = find_route,
 		.policy = iproxy_genl_policy,
 	},
 };

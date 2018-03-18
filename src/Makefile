@@ -1,7 +1,7 @@
 # https://www.kernel.org/doc/Documentation/kbuild/modules.txt
 
-#KDIR=/lib/modules/$(shell uname -r)/build
-KDIR=/root/android/kernel/msm
+KDIR=/lib/modules/$(shell uname -r)/build
+#KDIR=/root/android/kernel/msm
 
 ifeq ($(m),client)
 obj-m := iproxy-client.o
@@ -22,6 +22,9 @@ all:
 
 clean:
 	make -C $(KDIR) M=$(PWD) clean
+
+tool:
+	cc -g -Wall route-cli.c genl.c -o route-cli
 
 help:
 	@echo "usage:"

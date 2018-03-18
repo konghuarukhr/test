@@ -1,24 +1,16 @@
-#define GENL_LENGTH(len) NLMSG_LENGTH((len) + GENL_HDRLEN)
-#define GENL_SPACE(len) NLMSG_SPACE((len) + GENL_HDRLEN)
-#define GENL_DATA(nlh) (void *)((char *)NLMSG_DATA(nlh) + GENL_HDRLEN)
-#define BUF_SIZE 4096
+#include "genl.h"
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <linux/genetlink.h>
+#include <unistd.h>
+#include <errno.h>
 
-struct genlsk {
-	char buf[BUF_SIZE];
-	char *cur;
-	int fd;
-	uint16_t faid;
-	uint32_t seq;
-	uint32_t pid;
-};
-
-struct genliprhdr {
-	uint8_t type;
-	uint8_t count;
-	uint16_t reserved;
-};
-
-#define GENLIPR_HDRLEN NLMSG_ALIGN(sizeof(struct genliprhdr));
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <string.h>
 
 static inline void update_nl_hdr_len(struct genlsk *genlsk)
 {
@@ -28,7 +20,7 @@ static inline void update_nl_hdr_len(struct genlsk *genlsk)
 
 static inline void inc_genliprhdr_cnt(struct genlsk *genlsk)
 {
-	struct nlmsghdr *nlh = (struct nlmsghdr *)genlsk->buf;
+	//struct nlmsghdr *nlh = (struct nlmsghdr *)genlsk->buf;
 	struct genliprhdr *genliprh = (struct genliprhdr *)(genlsk->buf +
 			NLMSG_HDRLEN + GENL_HDRLEN);
 	genliprh->count++;
@@ -47,8 +39,8 @@ void put_nl_hdr(struct genlsk *genlsk)
 	struct nlmsghdr *nlh = (struct nlmsghdr *)genlsk->cur;
 	nlh->nlmsg_type = genlsk->faid;
 	nlh->nlmsg_flags = NLM_F_REQUEST;
-	nlh->nlmsg_seq = ++genl->seq;
-	nlh->nlmsg_pid = genl->pid;
+	nlh->nlmsg_seq = ++genlsk->seq;
+	nlh->nlmsg_pid = genlsk->pid;
 	genlsk->cur += NLMSG_HDRLEN;
 	update_nl_hdr_len(genlsk);
 }
@@ -65,14 +57,14 @@ void put_genl_hdr(struct genlsk *genlsk, uint8_t cmd)
 void put_genliprhdr(struct genlsk *genlsk, uint8_t type)
 {
 	struct genliprhdr *genliprh = (struct genliprhdr *)genlsk->cur;
-	genliprh->type = cmd;
+	genliprh->type = 0;
 	genliprh->count = 0;
 	genlsk->cur += GENLIPR_HDRLEN;
 	update_nl_hdr_len(genlsk);
 }
 
 
-bool add_nl_attr(struct genlsk *genlsk, uint16_t type, const char *data,
+bool add_nl_attr(struct genlsk *genlsk, uint16_t type, const void *data,
 		int len)
 {
 	if (!is_nl_buf_enough(genlsk, len))
@@ -84,22 +76,24 @@ bool add_nl_attr(struct genlsk *genlsk, uint16_t type, const char *data,
 	memcpy((char *)nla + NLA_HDRLEN, data, len);
 	genlsk->cur += NLA_ALIGN(nla->nla_len);
 	update_nl_hdr_len(genlsk);
-	inc_genliprhdr_cnt(genlsk);
+	//inc_genliprhdr_cnt(genlsk);
+	return true;
 }
 
 int send_nl_cmd(struct genlsk *genlsk)
 {
-	struct nlmsghdr *nlh = (struct nlmsghdr *)genlsk->cur;
+	struct nlmsghdr *nlh = (struct nlmsghdr *)genlsk->buf;
 	int len = nlh->nlmsg_len;
 	int off = 0;
 	while (off < len) {
-		ret = send(genlsk->fd, genlsk->buf + off, len - off, 0);
+		int ret = send(genlsk->fd, genlsk->buf + off, len - off, 0);
 		if (off < 0) {
 			fprintf(stderr, "%s\n", strerror(errno));
 			return -1;
 		}
 		off += ret;
 	}
+	return off;
 }
 
 int recv_nl_resp(struct genlsk *genlsk)
@@ -136,10 +130,13 @@ struct genlsk *open_genl_socket(const char *name)
 		goto socket_err;
 	}
 
+	struct timeval timeout = {.tv_sec = 5, .tv_usec = 0};
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
 	struct sockaddr_nl dst;
 	memset(&dst, 0, sizeof dst);
 	dst.nl_family = AF_NETLINK;
-	if (connect(fd, &dst, sizeof dst) < 0) {
+	if (connect(fd, (struct sockaddr *)&dst, sizeof dst) < 0) {
 		fprintf(stderr, "failed to connect: %s\n", strerror(errno));
 		goto connect_err;
 	}
@@ -151,9 +148,9 @@ struct genlsk *open_genl_socket(const char *name)
 
 	put_nl_hdr(genlsk);
 	put_genl_hdr(genlsk, CTRL_CMD_GETFAMILY);
-	put_nl_attr(genlsk, CTRL_ATTR_FAMILY_NAME, name, strlen(name) + 1);
+	add_nl_attr(genlsk, CTRL_ATTR_FAMILY_NAME, name, strlen(name) + 1);
 
-	if (send_nl_cmd(genl) < 0) {
+	if (send_nl_cmd(genlsk) < 0) {
 		fprintf(stderr, "failed to send: %s\n", strerror(errno));
 		goto send_nl_cmd_err;
 	}
@@ -178,7 +175,8 @@ struct genlsk *open_genl_socket(const char *name)
 		goto parse_faid_err;
 	}
 
-	genlsk->faid = *(uint16_t *)NLA_DATA(nla);
+	genlsk->faid = *(uint16_t *)((char *)nla + NLA_HDRLEN);
+	return genlsk;
 
 parse_faid_err:
 recv_nl_resp_err:
