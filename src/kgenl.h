@@ -21,15 +21,18 @@ static int clear_route(struct sk_buff *skb, struct genl_info *info)
 
 static int add_route(struct sk_buff *skb, struct genl_info *info)
 {
-	LOG_DEBUG("");
+	LOG_DEBUG("in");
 	struct nlattr *network_attr = info->attrs[IPR_ATTR_NETWORK];
 	struct nlattr *mask_attr = info->attrs[IPR_ATTR_MASK];
 	if (network_attr && mask_attr) {
 		__be32 network = nla_get_be32(network_attr);
 		__u8 mask = nla_get_u8(mask_attr);
+		LOG_DEBUG("%pI4/%u", &network, mask);
 		route_table_add(route_table, network, mask);
+		LOG_DEBUG("out");
 		return 0;
 	}
+	LOG_DEBUG("out");
 	return -EINVAL;
 }
 
@@ -47,15 +50,17 @@ static int delete_route(struct sk_buff *skb, struct genl_info *info)
 	return -EINVAL;
 }
 
-static int show_route(struct sk_buff *skb, struct genl_info *info)
+static int show_route(struct sk_buff *skb, struct netlink_callback *cb)
 {
-	LOG_DEBUG("");
-	return -ENOTSUPP;
+	LOG_DEBUG("in");
+	route_table_show(route_table);
+	LOG_DEBUG("out");
+	return skb->len;
 }
 
 static int find_route(struct sk_buff *skb_in, struct genl_info *info)
 {
-	LOG_DEBUG("");
+	LOG_DEBUG("in");
 	int err;
 	struct sk_buff *skb_out;
 	struct nlattr *network_attr = info->attrs[IPR_ATTR_NETWORK];
@@ -65,7 +70,9 @@ static int find_route(struct sk_buff *skb_in, struct genl_info *info)
 	}
 
 	__be32 network = nla_get_be32(network_attr);
+	LOG_DEBUG("network %pI4", &network);
 	__u8 mask = route_table_get_mask(route_table, network);
+	LOG_DEBUG("mask %u", mask);
 
 	skb_out = genlmsg_new(nla_total_size(sizeof(__u8)), GFP_KERNEL);
 	if (!skb_out) {
@@ -87,8 +94,9 @@ static int find_route(struct sk_buff *skb_in, struct genl_info *info)
 	}
 
 	genlmsg_end(skb_out, msg_head);
-	genlmsg_unicast(genl_info_net(info), skb_out, info->snd_portid);
+	genlmsg_reply(skb_out, info);
 
+	LOG_DEBUG("out");
 	return 0;
 
 nla_put_mask_err:
@@ -96,7 +104,7 @@ genlmsg_put_err:
 	nlmsg_free(skb_out);
 genlmsg_new_err:
 network_attr_err:
-	//netlink_ack(skb_in, nlmsg_hdr(skb_in), -EINVAL, NULL);
+	LOG_DEBUG("out");
 	return err;
 }
 
@@ -125,7 +133,7 @@ static const struct genl_ops iproxy_genl_ops[] = {
 	},
 	{
 		.cmd = IPR_CMD_SHOW_ROUTE,
-		.doit = show_route,
+		.dumpit = show_route,
 	},
 	{
 		.cmd = IPR_CMD_GET_ROUTE,

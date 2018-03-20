@@ -18,14 +18,6 @@ static inline void update_nl_hdr_len(struct genlsk *genlsk)
 	nlh->nlmsg_len = genlsk->cur - genlsk->buf;
 }
 
-static inline void inc_genliprhdr_cnt(struct genlsk *genlsk)
-{
-	//struct nlmsghdr *nlh = (struct nlmsghdr *)genlsk->buf;
-	struct genliprhdr *genliprh = (struct genliprhdr *)(genlsk->buf +
-			NLMSG_HDRLEN + GENL_HDRLEN);
-	genliprh->count++;
-}
-
 static inline bool is_nl_buf_enough(struct genlsk *genlsk, int len)
 {
 	if (genlsk->cur + len > genlsk->buf + BUF_SIZE)
@@ -45,6 +37,18 @@ void put_nl_hdr(struct genlsk *genlsk)
 	update_nl_hdr_len(genlsk);
 }
 
+void put_nl_hdr_dump(struct genlsk *genlsk)
+{
+	genlsk->cur = genlsk->buf;
+	struct nlmsghdr *nlh = (struct nlmsghdr *)genlsk->cur;
+	nlh->nlmsg_type = genlsk->faid;
+	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+	nlh->nlmsg_seq = ++genlsk->seq;
+	nlh->nlmsg_pid = genlsk->pid;
+	genlsk->cur += NLMSG_HDRLEN;
+	update_nl_hdr_len(genlsk);
+}
+
 void put_genl_hdr(struct genlsk *genlsk, uint8_t cmd)
 {
 	struct genlmsghdr *genlh = (struct genlmsghdr *)genlsk->cur;
@@ -53,16 +57,6 @@ void put_genl_hdr(struct genlsk *genlsk, uint8_t cmd)
 	genlsk->cur += GENL_HDRLEN;
 	update_nl_hdr_len(genlsk);
 }
-
-void put_genliprhdr(struct genlsk *genlsk, uint8_t type)
-{
-	struct genliprhdr *genliprh = (struct genliprhdr *)genlsk->cur;
-	genliprh->type = 0;
-	genliprh->count = 0;
-	genlsk->cur += GENLIPR_HDRLEN;
-	update_nl_hdr_len(genlsk);
-}
-
 
 bool add_nl_attr(struct genlsk *genlsk, uint16_t type, const void *data,
 		int len)
@@ -76,7 +70,6 @@ bool add_nl_attr(struct genlsk *genlsk, uint16_t type, const void *data,
 	memcpy((char *)nla + NLA_HDRLEN, data, len);
 	genlsk->cur += NLA_ALIGN(nla->nla_len);
 	update_nl_hdr_len(genlsk);
-	//inc_genliprhdr_cnt(genlsk);
 	return true;
 }
 
@@ -151,12 +144,12 @@ struct genlsk *open_genl_socket(const char *name)
 	add_nl_attr(genlsk, CTRL_ATTR_FAMILY_NAME, name, strlen(name) + 1);
 
 	if (send_nl_cmd(genlsk) < 0) {
-		fprintf(stderr, "failed to send: %s\n", strerror(errno));
+		fprintf(stderr, "failed to send name of GENL family %s\n", name);
 		goto send_nl_cmd_err;
 	}
 
 	if (recv_nl_resp(genlsk) < 0) {
-		fprintf(stderr, "failed to recv: %s\n", strerror(errno));
+		fprintf(stderr, "failed to recv ID of GENL family %s\n", name);
 		goto recv_nl_resp_err;
 	}
 

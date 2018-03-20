@@ -19,14 +19,6 @@ struct genlsk {
 	uint32_t pid;
 };
 
-struct genliprhdr {
-	uint8_t type;
-	uint8_t count;
-	uint16_t reserved;
-};
-
-#define GENLIPR_HDRLEN NLMSG_ALIGN(sizeof(struct genliprhdr))
-
 
 
 struct genlsk *open_genl_socket(const char *name);
@@ -34,6 +26,7 @@ int close_genl_socket(struct genlsk *genlsk);
 int send_nl_cmd(struct genlsk *genlsk);
 int recv_nl_resp(struct genlsk *genlsk);
 void put_nl_hdr(struct genlsk *genlsk);
+void put_nl_hdr_dump(struct genlsk *genlsk);
 void put_genl_hdr(struct genlsk *genlsk, uint8_t cmd);
 bool add_nl_attr(struct genlsk *genlsk, uint16_t type, const void *data,
 		int len);

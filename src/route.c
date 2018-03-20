@@ -105,13 +105,14 @@ int route_table_add_expire(struct route_table *rt, __be32 network,
 
 	re->rb = rt->buckets + (32 - mask);
 	re->network = network;
+	LOG_DEBUG("%pI4/%u", &network, 32 - mask);
 	setup_timer(&re->timer, route_entry_timer_cb, (unsigned long)re);
 
 	rb = re->rb;
 	spin_lock_bh(&rb->lock);
 	rb->size++;
 	hash_add_rcu(rb->head, &re->node, re->network);
-	if (!secs)
+	if (secs)
 		mod_timer(&re->timer, jiffies + secs * HZ);
 	spin_unlock_bh(&rb->lock);
 
@@ -163,6 +164,29 @@ __u8 route_table_get_mask(struct route_table *rt, __be32 ip)
 				rcu_read_unlock();
 				return 32 - i;
 			}
+		rcu_read_unlock();
+	}
+	return 0;
+}
+
+void route_table_show(struct route_table *rt)
+{
+	int i;
+
+	for (i = 0; i < ROUTE_BUCKET_NR; i++) {
+		struct route_bucket *rb;
+		struct route_entry *re;
+		int bkt;
+
+		LOG_DEBUG("%u", 32 - i);
+
+		rb = rt->buckets + i;
+		if (rb->size == 0)
+			continue;
+
+		rcu_read_lock();
+		hash_for_each_rcu(rb->head, bkt, re, node)
+			LOG_DEBUG("%pI4/%u", &re->network, 32 - i);
 		rcu_read_unlock();
 	}
 	return 0;
