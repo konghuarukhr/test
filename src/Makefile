@@ -24,7 +24,7 @@ clean:
 	make -C $(KDIR) M=$(PWD) clean
 
 tool:
-	cc -g -Wall route-cli.c genl.c -o route-cli
+	cc -g -Wall route-cli.c ugenl-helper.c -o route-cli
 
 help:
 	@echo "usage:"

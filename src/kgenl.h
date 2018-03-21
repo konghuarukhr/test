@@ -11,114 +11,187 @@
 static struct route_table *route_table;
 static struct genl_family iproxy_genl_family;
 
-static int clear_route(struct sk_buff *skb, struct genl_info *info)
+static int reply_ok(struct genl_info *info)
 {
-	LOG_DEBUG("in");
-	route_table_clear(route_table);
-	LOG_DEBUG("out");
+	int err;
+	struct sk_buff *skb_out;
+	void *msg_head;
+
+	skb_out = genlmsg_new(nla_total_size(0), GFP_KERNEL);
+	if (!skb_out)
+		return -ENOMEM;
+
+	msg_head = genlmsg_put(skb_out, 0, info->snd_seq,
+			&iproxy_genl_family, 0, IPR_CMD_REPLY);
+	if (!msg_head) {
+		err = -EMSGSIZE;
+		goto genlmsg_put_err;
+	}
+
+	err = nla_put_flag(skb_out, IPR_ATTR_OK);
+	if (err)
+		goto nla_put_mask_err;
+
+	genlmsg_end(skb_out, msg_head);
+
+	genlmsg_reply(skb_out, info);
+
 	return 0;
+
+nla_put_mask_err:
+genlmsg_put_err:
+	nlmsg_free(skb_out);
+	return err;
 }
 
 static int add_route(struct sk_buff *skb, struct genl_info *info)
 {
-	LOG_DEBUG("in");
-	struct nlattr *network_attr = info->attrs[IPR_ATTR_NETWORK];
+	struct nlattr *ip_attr = info->attrs[IPR_ATTR_IP];
 	struct nlattr *mask_attr = info->attrs[IPR_ATTR_MASK];
-	if (network_attr && mask_attr) {
-		__be32 network = nla_get_be32(network_attr);
+	if (ip_attr && mask_attr) {
+		__be32 ip = nla_get_in_addr(ip_attr);
 		__u8 mask = nla_get_u8(mask_attr);
-		LOG_DEBUG("%pI4/%u", &network, mask);
-		route_table_add(route_table, network, mask);
-		LOG_DEBUG("out");
-		return 0;
+		int err = route_table_add(route_table, ip, mask);
+		return err ? err : reply_ok(info);
 	}
-	LOG_DEBUG("out");
 	return -EINVAL;
 }
 
 static int delete_route(struct sk_buff *skb, struct genl_info *info)
 {
-	LOG_DEBUG("");
-	struct nlattr *network_attr = info->attrs[IPR_ATTR_NETWORK];
+	struct nlattr *ip_attr = info->attrs[IPR_ATTR_IP];
 	struct nlattr *mask_attr = info->attrs[IPR_ATTR_MASK];
-	if (network_attr && mask_attr) {
-		__be32 network = nla_get_be32(network_attr);
+	if (ip_attr && mask_attr) {
+		__be32 ip = nla_get_in_addr(ip_attr);
 		__u8 mask = nla_get_u8(mask_attr);
-		route_table_delete(route_table, network, mask);
-		return 0;
+		int err = route_table_delete(route_table, ip, mask);
+		return err ? err : reply_ok(info);
 	}
 	return -EINVAL;
 }
 
-static int show_route(struct sk_buff *skb, struct netlink_callback *cb)
+static int find_route(struct sk_buff *skb, struct genl_info *info)
 {
-	LOG_DEBUG("in");
-	route_table_show(route_table);
-	LOG_DEBUG("out");
-	return skb->len;
-}
-
-static int find_route(struct sk_buff *skb_in, struct genl_info *info)
-{
-	LOG_DEBUG("in");
 	int err;
+	struct nlattr *ip_attr;
+	__be32 ip;
+	__u8 mask;
 	struct sk_buff *skb_out;
-	struct nlattr *network_attr = info->attrs[IPR_ATTR_NETWORK];
-	if (!network_attr) {
-		err = -EINVAL;
-		goto network_attr_err;
-	}
+	void *msg_head;
 
-	__be32 network = nla_get_be32(network_attr);
-	LOG_DEBUG("network %pI4", &network);
-	__u8 mask = route_table_get_mask(route_table, network);
-	LOG_DEBUG("mask %u", mask);
+	ip_attr = info->attrs[IPR_ATTR_IP];
+	if (!ip_attr)
+		return -EINVAL;
 
-	skb_out = genlmsg_new(nla_total_size(sizeof(__u8)), GFP_KERNEL);
-	if (!skb_out) {
-		err = -ENOMEM;
-		goto genlmsg_new_err;
-	}
+	ip = nla_get_in_addr(ip_attr);
+	mask = route_table_find(route_table, ip);
 
-	void *msg_head = genlmsg_put(skb_out, NETLINK_CB(skb_in).portid,
-			info->snd_seq, &iproxy_genl_family, 0,
-			IPR_CMD_GET_ROUTE);
+	skb_out = genlmsg_new(nla_total_size(sizeof(__u8)),
+			GFP_KERNEL);
+	if (!skb_out)
+		return -ENOMEM;
+
+	msg_head = genlmsg_put(skb_out, 0, info->snd_seq,
+			&iproxy_genl_family, 0, IPR_CMD_REPLY);
 	if (!msg_head) {
 		err = -EMSGSIZE;
 		goto genlmsg_put_err;
 	}
 
 	err = nla_put_u8(skb_out, IPR_ATTR_MASK, mask);
-	if (err) {
+	if (err)
 		goto nla_put_mask_err;
-	}
 
 	genlmsg_end(skb_out, msg_head);
+
 	genlmsg_reply(skb_out, info);
 
-	LOG_DEBUG("out");
 	return 0;
 
 nla_put_mask_err:
 genlmsg_put_err:
 	nlmsg_free(skb_out);
-genlmsg_new_err:
-network_attr_err:
-	LOG_DEBUG("out");
 	return err;
 }
 
-static struct nla_policy iproxy_genl_policy[IPR_ATTR_MAX + 1] = {
-	[IPR_ATTR_NETWORK] = {.type = NLA_U32},
+static int clear_route(struct sk_buff *skb, struct genl_info *info)
+{
+	int err = route_table_clear(route_table);
+	return err ? err : reply_ok(info);
+}
+
+static int cb_show_func(void *data, __be32 network, __u8 mask)
+{
+	struct sk_buff *skb = (struct sk_buff *)data;
+
+	if (skb_tailroom(skb) < nla_total_size(sizeof(__be32)) +
+		nla_total_size(sizeof(__u8)))
+		return -EMSGSIZE;
+
+	nla_put_in_addr(skb, IPR_ATTR_IP, network);
+	nla_put_u8(skb, IPR_ATTR_MASK, mask);
+
+	return 0;
+}
+
+static int show_route(struct sk_buff *skb, struct netlink_callback *cb)
+{
+	void *msg_head;
+
+	LOG_DEBUG("in: offset %ld", cb->args[0]);
+
+	msg_head = genlmsg_put(skb, 0, cb->nlh->nlmsg_seq,
+			&iproxy_genl_family, NLM_F_MULTI, IPR_CMD_REPLY);
+	if (!msg_head) {
+		LOG_DEBUG("out with err");
+		return -EMSGSIZE;
+	}
+
+	route_table_cb(route_table, cb_show_func, skb, &cb->args[0]);
+
+	genlmsg_end(skb, msg_head);
+
+	LOG_DEBUG("out: offset %ld len %d", cb->args[0], skb->len -
+			(int)GENL_HDRLEN - NLMSG_HDRLEN);
+	return skb->len - GENL_HDRLEN - NLMSG_HDRLEN;
+}
+
+static const struct nla_policy iproxy_genl_policy[IPR_ATTR_MAX + 1] = {
+	[IPR_ATTR_OK] = {.type = NLA_FLAG},
+	[IPR_ATTR_IP] = {.type = NLA_U32},
 	[IPR_ATTR_MASK] = {.type = NLA_U8},
 };
 
+#ifdef DEBUG
+static int pre_doit(const struct genl_ops *ops, struct sk_buff *skb,
+		struct genl_info *info)
+{
+	LOG_DEBUG("GENL CMD %u begin", ops->cmd);
+	return 0;
+}
+
+static void post_doit(const struct genl_ops *ops, struct sk_buff *skb,
+		struct genl_info *info)
+{
+	LOG_DEBUG("GENL CMD %u end", ops->cmd);
+}
+
+/*
+static int start(struct netlink_callback *cb)
+{
+	LOG_DEBUG("GENL DUMP begin");
+	return 0;
+}
+*/
+
+static int done(struct netlink_callback *cb)
+{
+	LOG_DEBUG("GENL DUMP end");
+	return 0;
+}
+#endif
+
 static const struct genl_ops iproxy_genl_ops[] = {
-	{
-		.cmd = IPR_CMD_CLEAR_ROUTE,
-		.doit = clear_route,
-		.flags = GENL_ADMIN_PERM,
-	},
 	{
 		.cmd = IPR_CMD_ADD_ROUTE,
 		.doit = add_route,
@@ -132,13 +205,22 @@ static const struct genl_ops iproxy_genl_ops[] = {
 		.flags = GENL_ADMIN_PERM,
 	},
 	{
-		.cmd = IPR_CMD_SHOW_ROUTE,
-		.dumpit = show_route,
-	},
-	{
-		.cmd = IPR_CMD_GET_ROUTE,
+		.cmd = IPR_CMD_FIND_ROUTE,
 		.doit = find_route,
 		.policy = iproxy_genl_policy,
+	},
+	{
+		.cmd = IPR_CMD_CLEAR_ROUTE,
+		.doit = clear_route,
+		.flags = GENL_ADMIN_PERM,
+	},
+	{
+		.cmd = IPR_CMD_SHOW_ROUTE,
+		.dumpit = show_route,
+#ifdef DEBUG
+		/*.start = start,*/
+		.done = done,
+#endif
 	},
 };
 
@@ -150,6 +232,10 @@ static struct genl_family iproxy_genl_family = {
 	.ops = iproxy_genl_ops,
 	.n_ops = ARRAY_SIZE(iproxy_genl_ops),
 	.module = THIS_MODULE,
+#ifdef DEBUG
+	.pre_doit = pre_doit,
+	.post_doit = post_doit,
+#endif
 };
 
 #endif

@@ -148,7 +148,7 @@ static void custom_uninit(void)
 
 static inline bool is_noproxy_ip(__be32 ip)
 {
-	return route_table_get_mask(route_table, ip);
+	return route_table_find(route_table, ip);
 }
 
 static bool need_server_decap(struct sk_buff *skb)
@@ -373,7 +373,7 @@ static int do_server_encap(struct sk_buff *skb)
 	iprh = ipr_hdr(skb);
 	set_ipr_sc(iprh);
 	iprh->protocol = niph->protocol;
-	iprh->mask = htons(route_table_get_mask(route_table, niph->saddr));
+	iprh->mask = htons(route_table_find(route_table, niph->saddr));
 	iprh->ip = niph->saddr;
 
 	udph = udp_hdr(skb);

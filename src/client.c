@@ -205,11 +205,6 @@ static inline bool is_noproxy_ip(__be32 ip)
 	return route_table_get_mask(route_table, ip);
 }
 
-static inline __be32 get_network(__be32 ip, unsigned char mask)
-{
-	return ip & -(1 << (32 - mask));
-}
-
 /**
  * dirty local DNS IP
  * we assume only one IP will be used in a period of time
@@ -406,10 +401,9 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	pip = iprh->ip;
 	if (iprh->mask) {
 		unsigned char mask = ntohs(iprh->mask);
-		__be32 network = get_network(pip, mask);
 		LOG_DEBUG("%pI4 <- %pI4: add route %pI4/%u", &dip, &sip,
-				&network, mask);
-		route_table_add(route_table, network, mask);
+				&pip, mask);
+		route_table_add(route_table, pip, mask);
 	}
 	iph->protocol = iprh->protocol;
 	iph->saddr = rewrite_dns ? get_local_dns_ip() : pip;
