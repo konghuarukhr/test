@@ -4,7 +4,6 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -12,6 +11,7 @@
 
 #include "ugenl-helper.h"
 
+#define BUF_SIZE 4096
 
 struct genlsk {
 	char buf[BUF_SIZE];

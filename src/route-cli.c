@@ -5,7 +5,6 @@
 #include <linux/genetlink.h>
 #include <unistd.h>
 #include <errno.h>
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
