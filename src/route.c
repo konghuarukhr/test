@@ -136,7 +136,7 @@ int route_table_add_expire(struct route_table *rt, __be32 ip, __u8 mask,
 
 int route_table_add(struct route_table *rt, __be32 ip, __u8 mask)
 {
-	return route_table_add_expire(rt, ip, mask, 0);
+	return route_table_add_expire(rt, ip, mask, 1);
 }
 
 int route_table_delete(struct route_table *rt, __be32 ip, __u8 mask)
@@ -159,6 +159,29 @@ int route_table_delete(struct route_table *rt, __be32 ip, __u8 mask)
 		}
 	spin_unlock_bh(&rb->lock);
 
+	return 0;
+}
+
+int route_table_delete_match(struct route_table *rt, __be32 ip)
+{
+	int i;
+
+	for (i = 0; i < ROUTE_BUCKET_NR; i++) {
+		struct route_bucket *rb;
+		struct route_entry *re;
+		__be32 network;
+
+		rb = rt->buckets + i;
+		if (rb->size == 0)
+			continue;
+
+		network = ip & rb->mask;
+		rcu_read_lock();
+		hash_for_each_possible_rcu(rb->head, re, node, network)
+			if (re->network == network)
+				route_entry_release(re);
+		rcu_read_unlock();
+	}
 	return 0;
 }
 
@@ -210,7 +233,7 @@ int route_table_cb(struct route_table *rt, int (*func)(void *, __be32, __u8),
 			err = func(data, re->network, 32 - i);
 			if (err) {
 				rcu_read_unlock();
-				*last = idx;
+				*last = idx - 1;
 				return err;
 			}
 		}

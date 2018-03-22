@@ -54,7 +54,9 @@ check $? "MD5 error"
 log "MD5 OK"
 
 # Generate China IPv4 file
-grep "^apnic|CN|ipv4" ${TODAY_ROUTE_FILE} | cut -d"|" -sf"4,5" > ${CHINA_ROUTE_FILE}
+#grep "^apnic|CN|ipv4" ${TODAY_ROUTE_FILE} | cut -d"|" -sf"4,5" > ${CHINA_ROUTE_FILE}
+#echo "x=0;for(y=$n;y>0;y/=2)x+=1;33-x" | bc
+awk -F '|' '/^apnic\|CN\|ipv4/{y=0;for(x=1;x<$5;x*=2)y++;y=32-y;print $4"/"y}' ${TODAY_ROUTE_FILE} >  ${CHINA_ROUTE_FILE}
 log "china route file generated"
 
 # Delete old files

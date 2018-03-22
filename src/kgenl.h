@@ -70,6 +70,17 @@ static int delete_route(struct sk_buff *skb, struct genl_info *info)
 	return -EINVAL;
 }
 
+static int delete_route_match(struct sk_buff *skb, struct genl_info *info)
+{
+	struct nlattr *ip_attr = info->attrs[IPR_ATTR_IP];
+	if (ip_attr) {
+		__be32 ip = nla_get_in_addr(ip_attr);
+		int err = route_table_delete_match(route_table, ip);
+		return err ? err : reply_ok(info);
+	}
+	return -EINVAL;
+}
+
 static int find_route(struct sk_buff *skb, struct genl_info *info)
 {
 	int err;
@@ -201,6 +212,12 @@ static const struct genl_ops iproxy_genl_ops[] = {
 	{
 		.cmd = IPR_CMD_DELETE_ROUTE,
 		.doit = delete_route,
+		.policy = iproxy_genl_policy,
+		.flags = GENL_ADMIN_PERM,
+	},
+	{
+		.cmd = IPR_CMD_DELETE_MATCH_ROUTE,
+		.doit = delete_route_match,
 		.policy = iproxy_genl_policy,
 		.flags = GENL_ADMIN_PERM,
 	},

@@ -202,7 +202,7 @@ static void custom_uninit(void)
 
 static inline bool is_noproxy_ip(__be32 ip)
 {
-	return route_table_get_mask(route_table, ip);
+	return route_table_find(route_table, ip);
 }
 
 /**

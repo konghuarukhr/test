@@ -14,7 +14,9 @@ ccflags-y := -D_IPR_SERVER
 endif
 
 ifeq ($(d),debug)
-ccflags-y += -DDEBUG -Wall
+ccflags-y += -DDEBUG -g -Wall
+else
+ccflags-y += -O2
 endif
 
 all:
@@ -24,7 +26,7 @@ clean:
 	make -C $(KDIR) M=$(PWD) clean
 
 tool:
-	cc -g -Wall route-cli.c ugenl-helper.c -o route-cli
+	cc $(ccflags-y) route-cli.c ugenl-helper.c -o route-cli
 
 help:
 	@echo "usage:"
