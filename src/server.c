@@ -175,8 +175,8 @@ static bool need_server_decap(struct sk_buff *skb)
 	if (!is_ipr_cs(iprh))
 		return false;
 
-	LOG_DEBUG("%pI4 -> %pI4: yes", &ip_hdr(skb)->saddr,
-			&ip_hdr(skb)->daddr);
+	LOG_DEBUG("%pI4:%u -> %pI4: yes", &ip_hdr(skb)->saddr,
+			ntohs(udph->source), &ip_hdr(skb)->daddr);
 	return true;
 }
 
