@@ -10,5 +10,8 @@ MSS=`expr ${MTU} - 20 - 20 - 8 - 8`
 iptables -tnat -DPOSTROUTING -o${IFACE} ! -s${IP} -ptcp --tcp-flags SYN,RST SYN -jTCPMSS --set-mss ${MSS} &> /dev/null
 iptables -tnat -APOSTROUTING -o${IFACE} ! -s${IP} -ptcp --tcp-flags SYN,RST SYN -jTCPMSS --set-mss ${MSS}
 
+iptables -tmangle -DPOSTROUTING -o${IFACE} ! -s${IP} -jTTL --ttl-set 128 &> /dev/null
+iptables -tmangle -APOSTROUTING -o${IFACE} ! -s${IP} -jTTL --ttl-set 128
+
 iptables -tnat -DPOSTROUTING -o${IFACE} ! -s${IP} -jSNAT --to-source ${IP} &> /dev/null
 iptables -tnat -APOSTROUTING -o${IFACE} ! -s${IP} -jSNAT --to-source ${IP}

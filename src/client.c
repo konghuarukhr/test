@@ -238,30 +238,14 @@ static bool need_client_encap(struct sk_buff *skb)
 	sip = iph->saddr;
 	dip = iph->daddr;
 
+	/* Do we need? */
 	if (is_server_ip(dip))
 		return false;
-
-	if (!is_dns_no_special() && iph->protocol == IPPROTO_UDP &&
-			pskb_may_pull(skb, skb_network_header_len(skb) +
-				sizeof(struct udphdr)) &&
-			udp_hdr(skb)->dest == DNS_PORT) {
-		if (is_dns_all()) {
-			LOG_DEBUG("%pI4 -> %pI4: yes, dns all", &sip, &dip);
-			return true;
-		}
-
-		if (is_dns_public() && !is_private_ip(dip)) {
-			LOG_DEBUG("%pI4 -> %pI4: yes, dns public", &sip, &dip);
-			return true;
-		}
-
-		return false;
-	}
 
 	if (is_private_ip(dip))
 		return false;
 
-	if (is_route_proxy() && is_noproxy_ip(dip))
+	if (is_noproxy_ip(dip))
 		return false;
 
 	LOG_DEBUG("%pI4 -> %pI4: yes", &sip, &dip);
@@ -277,14 +261,20 @@ static int do_client_encap(struct sk_buff *skb)
 	struct iprhdr *iprh;
 	__be32 sip;
 	__be32 dip;
+	__u16 nlen;
 	bool rewrite_dns;
 
-	nhl = skb_network_header_len(skb);
 
 	iph = ip_hdr(skb);
 	sip = iph->saddr;
 	dip = iph->daddr;
+	nhl = skb_network_header_len(skb);
+	nlen = ntohs(iph->tot_len) + CAPL;
 	LOG_DEBUG("%pI4 -> %pI4: encap", &sip, &dip);
+	if (unlikely(nlen < CAPL)) {
+		LOG_ERROR("%pI4 -> %pI4: packet too large", &sip, &dip);
+		return -EMSGSIZE;
+	}
 
 	err = skb_cow(skb, CAPL);
 	if (err) {
@@ -294,41 +284,26 @@ static int do_client_encap(struct sk_buff *skb)
 	}
 
 	iph = ip_hdr(skb);
-	if (!is_dns_no_special() && iph->protocol == IPPROTO_UDP &&
-			udp_hdr(skb)->dest == DNS_PORT) {
-		rewrite_dns = true;
-		LOG_DEBUG("%pI4 -> %pI4: rewrite DNS IP", &sip, &dip);
-	} else
-		rewrite_dns = false;
-
 	niph = (struct iphdr *)__skb_push(skb, CAPL);
 	memmove(niph, iph, nhl);
 	skb_reset_network_header(skb);
 	skb_set_transport_header(skb, nhl);
 
 	iprh = ipr_hdr(skb);
-	set_ipr_cs(iprh);
-	iprh->protocol = niph->protocol;
-	iprh->user = my_get_user();
-	if (rewrite_dns) {
-		/* dirty set, avaliable in a period, easy implement */
-		set_local_dns_ip(dip);
-		iprh->ip = get_dns_ip();
-	} else
-		iprh->ip = dip;
+	set_ipr_cs(iprh, niph->protocol, my_get_user(), dip);
 
 	udph = udp_hdr(skb);
 	udph->source = get_client_port();
 	udph->dest = get_server_port();
-	udph->len = htons(ntohs(niph->tot_len) - nhl + CAPL);
+	udph->len = htons(nlen - nhl);
+	LOG_DEBUG("======== %d", skb->ip_summed);
+	udph->check = 0;
+	skb->ip_summed = CHECKSUM_NONE;
 
 	niph->protocol = IPPROTO_UDP;
 	niph->daddr = get_server_ip();
-	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);
+	niph->tot_len = htons(nlen);
 	ip_send_check(niph);
-
-	udph->check = 0;
-	skb->ip_summed = CHECKSUM_NONE;
 
 	__skb_pull(skb, nhl + CAPL);
 	masq_data(skb, get_password());
@@ -424,11 +399,14 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 static unsigned int client_encap(void *priv, struct sk_buff *skb,
 		const struct nf_hook_state *state)
 {
+	int err;
+
 	if (!need_client_encap(skb))
 		return NF_ACCEPT;
 
-	if (do_client_encap(skb)) {
-		LOG_ERROR("drop packet in client encap");
+	err = do_client_encap(skb);
+	if (err) {
+		LOG_ERROR("failed to do client encap, drop packet: %d", err);
 		return NF_DROP;
 	}
 
@@ -453,14 +431,14 @@ static const struct nf_hook_ops iproxy_nf_ops[] = {
 	{
 		.hook = client_encap,
 		.pf = NFPROTO_IPV4,
-		.hooknum = NF_INET_LOCAL_OUT, /* before routing */
+		.hooknum = NF_INET_LOCAL_OUT, /* before frag, before routing */
 		.priority = NF_IP_PRI_LAST,
 	},
 	{
 		.hook = client_encap,
 		.pf = NFPROTO_IPV4,
-		.hooknum = NF_INET_FORWARD, /* before routing, NEED iptables defrag, used by router */
-		.priority = NF_IP_PRI_LAST,
+		.hooknum = NF_INET_FORWARD, /* used in forwarding mode, NEED iprtables defrag */
+		.priority = NF_IP_PRI_CONNTRACK_DEFRAG + 1,
 	},
 	{
 		.hook = client_decap,
@@ -471,8 +449,8 @@ static const struct nf_hook_ops iproxy_nf_ops[] = {
 	{
 		.hook = client_decap,
 		.pf = NFPROTO_IPV4,
-		.hooknum = NF_INET_FORWARD, /* NEED iptables defrag, used by router */
-		.priority = NF_IP_PRI_FIRST,
+		.hooknum = NF_INET_FORWARD, /* used in forwarding mode, NEED iptables defrag */
+		.priority = NF_IP_PRI_CONNTRACK_DEFRAG + 1,
 	},
 };
 

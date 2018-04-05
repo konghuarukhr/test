@@ -1,7 +1,7 @@
 #include "common.h"
 #include "kgenl.h"
 
-#define VIP_EXPIRE 300
+#define VIP_EXPIRE 5
 
 static struct xlate_table *xlate_table = NULL;
 
@@ -247,17 +247,19 @@ static int do_server_decap(struct sk_buff *skb)
 				return -EFAULT;
 			}
 			udph = udp_hdr(skb);
+			/*
 			LOG_DEBUG("XXZ 0x%04x", udph->check);
 			LOG_DEBUG("XXY %pI4 %pI4 %u", &vip, &pip, udph->len);
 			LOG_DEBUG("XXY %pI4 %pI4 %u", &vip, &pip, ntohs(udph->len));
 			LOG_DEBUG("XXX %u %u", skb->csum_start, skb->csum_offset);
+			*/
 			udph->check = ~csum_tcpudp_magic(vip, pip, ntohs(udph->len),
 					IPPROTO_UDP, 0);
 			skb->ip_summed = CHECKSUM_PARTIAL;
 			skb->csum_start = skb_transport_header(skb) - skb->head;
 			skb->csum_offset = offsetof(struct udphdr, check);
-			LOG_DEBUG("XXY 0x%04x", udph->check);
-			LOG_DEBUG("XXX %u %u", skb->csum_start, skb->csum_offset);
+			//LOG_DEBUG("XXY 0x%04x", udph->check);
+			//LOG_DEBUG("XXX %u %u", skb->csum_start, skb->csum_offset);
 			break;
 		case IPPROTO_UDPLITE:
 			if (!pskb_may_pull(skb, nhl + sizeof(struct udphdr))) {
@@ -322,7 +324,7 @@ static bool need_server_encap(struct sk_buff *skb)
 	if (!is_in_vip_range(ntohl(iph->daddr)))
 		return false;
 
-	LOG_DEBUG("%pI4 -> %pI4: yes", &iph->saddr, &iph->daddr);
+	LOG_DEBUG("%pI4 <- %pI4: yes", &iph->daddr, &iph->saddr);
 	return true;
 }
 
@@ -335,22 +337,29 @@ static int do_server_encap(struct sk_buff *skb)
 	struct iprhdr *iprh;
 	__be32 sip;
 	__be32 dip;
-	__be32 xip;
+	__u16 nlen;
 	__be32 lip;
+	__be32 xip;
 	__be16 xport;
 	__be16 xuser;
 
 	lip = get_local_ip();
-	nhl = skb_network_header_len(skb);
 
 	iph = ip_hdr(skb);
 	sip = iph->saddr;
 	dip = iph->daddr;
+	nhl = skb_network_header_len(skb);
+	nlen = ntohs(iph->tot_len) + CAPL;
 	LOG_DEBUG("%pI4 <- %pI4: encap", &dip, &sip);
+	if (unlikely(nlen < CAPL)) {
+		LOG_ERROR("%pI4 <- %pI4: packet too large", &dip, &sip);
+		return -EMSGSIZE;
+	}
 
-	err = xlate_table_find_ipport(xlate_table, dip, &xip, &xport, &xuser);
+	err = xlate_table_find_entry_by_vip(xlate_table, dip, &xip, &xport,
+			&xuser);
 	if (err) {
-		LOG_ERROR("%pI4 <- %pI4: failed to find xlate ip port: %d",
+		LOG_ERROR("%pI4 <- %pI4: failed to find xlate entry by vip: %d",
 				&dip, &sip, err);
 		return err;
 	}
@@ -359,8 +368,8 @@ static int do_server_encap(struct sk_buff *skb)
 
 	err = skb_cow(skb, CAPL);
 	if (err) {
-		LOG_ERROR("%pI4 <- %pI4: failed to do skb_cow: %d",
-				&dip, &sip, err);
+		LOG_ERROR("%pI4 <- %pI4: failed to do skb_cow: %d", &dip, &sip,
+				err);
 		return err;
 	}
 
@@ -371,24 +380,23 @@ static int do_server_encap(struct sk_buff *skb)
 	skb_set_transport_header(skb, nhl);
 
 	iprh = ipr_hdr(skb);
-	set_ipr_sc(iprh);
-	iprh->protocol = niph->protocol;
-	iprh->mask = htons(route_table_find(route_table, niph->saddr));
-	iprh->ip = niph->saddr;
+	set_ipr_sc(iprh, niph->protocol, route_table_find(route_table, sip),
+			sip);
 
 	udph = udp_hdr(skb);
 	udph->source = get_server_port();
 	udph->dest = xport;
-	udph->len = htons(ntohs(niph->tot_len) + CAPL - nhl);
+	udph->len = htons(nlen - nhl);
 
 	niph->protocol = IPPROTO_UDP;
 	niph->saddr = lip;
 	niph->daddr = xip;
-	niph->tot_len = htons(ntohs(niph->tot_len) + CAPL);
+	niph->tot_len = htons(nlen);
 	ip_send_check(niph);
 
+	LOG_DEBUG("======== %d", skb->ip_summed);
 	udph->check = 0;
-	skb->ip_summed = CHECKSUM_NONE;
+	skb->ip_summed = CHECKSUM_UNNECESSARY;
 
 	__skb_pull(skb, nhl + CAPL);
 	masq_data(skb, get_passwd(xuser));
@@ -401,11 +409,14 @@ static int do_server_encap(struct sk_buff *skb)
 static unsigned int server_decap(void *priv, struct sk_buff *skb,
 		const struct nf_hook_state *state)
 {
+	int err;
+
 	if (!need_server_decap(skb))
 		return NF_ACCEPT;
 
-	if (do_server_decap(skb)) {
-		LOG_ERROR("drop packet in server decap");
+	err = do_server_decap(skb);
+	if (err) {
+		LOG_ERROR("failed to do server decap, drop packet: %d", err);
 		return NF_DROP;
 	}
 
@@ -415,11 +426,14 @@ static unsigned int server_decap(void *priv, struct sk_buff *skb,
 static unsigned int server_encap(void *priv, struct sk_buff *skb,
 		const struct nf_hook_state *state)
 {
+	int err;
+
 	if (!need_server_encap(skb))
 		return NF_ACCEPT;
 
-	if (do_server_encap(skb)) {
-		LOG_ERROR("drop packet in server encap");
+	err = do_server_encap(skb);
+	if (err) {
+		LOG_ERROR("failed to do server encap, drop packet: %d", err);
 		return NF_DROP;
 	}
 

@@ -113,7 +113,7 @@ void xlate_table_uninit(struct xlate_table *xt)
 	kfree(xt);
 }
 
-int xlate_table_find_ipport(const struct xlate_table *xt, __be32 vip,
+int xlate_table_find_entry_by_vip(const struct xlate_table *xt, __be32 vip,
 		__be32 *ip, __be16 *port, __be16 *user)
 {
 	struct xlate_entry *xe;

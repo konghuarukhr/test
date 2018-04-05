@@ -13,7 +13,7 @@ struct iprhdr {
 		__be16 user;
 		__be16 mask;
 	};
-	__u32 ip;
+	__be32 ip;
 };
 
 #define CAPL (sizeof(struct udphdr) + sizeof(struct iprhdr))
@@ -28,9 +28,13 @@ static inline bool is_ipr_cs(const struct iprhdr *iprh)
 	return iprh->type == IPR_C_S;
 }
 
-static inline void set_ipr_cs(struct iprhdr *iprh)
+static inline void set_ipr_cs(struct iprhdr *iprh, __u8 protocol,
+		__be16 user, __be32 ip)
 {
 	iprh->type = IPR_C_S;
+	iprh->protocol = protocol;
+	iprh->user = user;
+	iprh->ip = ip;
 }
 
 static inline bool is_ipr_sc(const struct iprhdr *iprh)
@@ -38,10 +42,16 @@ static inline bool is_ipr_sc(const struct iprhdr *iprh)
 	return iprh->type == IPR_S_C;
 }
 
-static inline void set_ipr_sc(struct iprhdr *iprh)
+static inline void set_ipr_sc(struct iprhdr *iprh, __u8 protocol,
+		__u8 mask, __be32 ip)
 {
 	iprh->type = IPR_S_C;
+	iprh->protocol = protocol;
+	iprh->mask = htons(mask);
+	iprh->ip = ip;
 }
+
+
 
 static inline int pskb_may_pull_iprhdr(struct sk_buff *skb)
 {
