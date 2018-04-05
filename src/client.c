@@ -1,6 +1,8 @@
 #include "common.h"
 #include "kgenl.h"
 
+#define ROUTE_EXPIRE 3600
+
 static struct route_table *route_table = NULL;
 
 static char *server_ip = NULL;
@@ -62,6 +64,11 @@ static inline bool is_server_ip(__be32 ip)
 static inline __be32 get_server_ip(void)
 {
 	return _server_ip;
+}
+
+static inline bool is_client_port(__be16 port)
+{
+	return port == _client_port;
 }
 
 static inline __be16 get_client_port(void)
@@ -238,7 +245,7 @@ static bool need_client_encap(struct sk_buff *skb)
 	sip = iph->saddr;
 	dip = iph->daddr;
 
-	/* Do we need? */
+	/* Do we need this? */
 	if (is_server_ip(dip))
 		return false;
 
@@ -256,17 +263,20 @@ static int do_client_encap(struct sk_buff *skb)
 {
 	int err;
 	int nhl;
-	struct iphdr *iph, *niph;
-	struct udphdr *udph;
-	struct iprhdr *iprh;
 	__be32 sip;
 	__be32 dip;
 	__u16 nlen;
+	struct iphdr *iph, *niph;
+	struct udphdr *udph;
+	struct iprhdr *iprh;
+	__be32 pip;
+
+	pip = get_server_ip();
+	nhl = skb_network_header_len(skb);
 
 	iph = ip_hdr(skb);
 	sip = iph->saddr;
 	dip = iph->daddr;
-	nhl = skb_network_header_len(skb);
 	nlen = ntohs(iph->tot_len) + CAPL;
 	LOG_DEBUG("%pI4 -> %pI4: encap", &sip, &dip);
 	if (unlikely(nlen < CAPL)) {
@@ -294,12 +304,11 @@ static int do_client_encap(struct sk_buff *skb)
 	udph->source = get_client_port();
 	udph->dest = get_server_port();
 	udph->len = htons(nlen - nhl);
-	LOG_DEBUG("======== %d", skb->ip_summed);
 	udph->check = 0;
-	skb->ip_summed = CHECKSUM_NONE;
+	skb->ip_summed = CHECKSUM_UNNECESSARY;
 
 	niph->protocol = IPPROTO_UDP;
-	niph->daddr = get_server_ip();
+	niph->daddr = pip;
 	niph->tot_len = htons(nlen);
 	ip_send_check(niph);
 
@@ -307,7 +316,7 @@ static int do_client_encap(struct sk_buff *skb)
 	masq_data(skb, get_password());
 	__skb_push(skb, nhl + CAPL);
 
-	LOG_DEBUG("%pI4 -> %pI4: go to proxy", &sip, &dip);
+	LOG_DEBUG("%pI4 -> %pI4: go to proxy: %pI4", &sip, &dip, &pip);
 	return 0;
 }
 
@@ -334,19 +343,20 @@ static bool need_client_decap(struct sk_buff *skb) {
 	if (!is_ipr_sc(iprh))
 		return false;
 
-	LOG_DEBUG("%pI4 <- %pI4: yes", &ip_hdr(skb)->daddr, &ip_hdr(skb)->saddr);
+	LOG_DEBUG("%pI4 <- %pI4: yes", &ip_hdr(skb)->daddr,
+			&ip_hdr(skb)->saddr);
 	return true;
 }
 
 static unsigned int do_client_decap(struct sk_buff *skb)
 {
+	int err;
 	int nhl;
-	struct iphdr *iph, *niph;
-	struct iprhdr *iprh;
 	__be32 sip;
 	__be32 dip;
-	__be32 pip;
-
+	__be32 rip;
+	struct iphdr *iph, *niph;
+	struct iprhdr *iprh;
 
 	nhl = skb_network_header_len(skb);
 
@@ -355,23 +365,27 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	__skb_push(skb, nhl + CAPL);
 
 	iph = ip_hdr(skb);
+	iprh = ipr_hdr(skb);
 	sip = iph->saddr;
 	dip = iph->daddr;
+	rip = iprh->ip;
 	LOG_DEBUG("%pI4 <- %pI4: decap", &dip, &sip);
 
-	iph = ip_hdr(skb);
-	iprh = ipr_hdr(skb);
-	pip = iprh->ip;
 	if (iprh->mask) {
-		unsigned char mask = ntohs(iprh->mask);
-		LOG_DEBUG("%pI4 <- %pI4: add route %pI4/%u", &dip, &sip,
-				&pip, mask);
-		route_table_add(route_table, pip, mask);
+		__u8 mask = ntohs(iprh->mask);
+		LOG_DEBUG("%pI4 <- %pI4: add route %pI4/%u", &dip, &sip, &rip,
+				mask);
+		err = route_table_add_expire(route_table, rip, mask,
+				ROUTE_EXPIRE);
+		if (err)
+			LOG_WARN("%pI4 <- %pI4: failed to add route %pI4/%u",
+					&dip, &sip, &rip, mask);
 	}
+
 	iph->protocol = iprh->protocol;
-	iph->saddr = pip;
+	iph->saddr = rip;
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
-	//ip_send_check(iph);
+	ip_send_check(iph);
 
 	//skb->ip_summed = CHECKSUM_COMPLETE;
 
@@ -380,7 +394,7 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	skb_reset_network_header(skb);
 	skb_set_transport_header(skb, nhl);
 
-	LOG_DEBUG("%pI4 <- %pI4: received", &niph->daddr, &niph->saddr);
+	LOG_DEBUG("%pI4 <- %pI4: received: %pI4", &dip, &sip, &rip);
 	return 0;
 }
 
@@ -404,11 +418,14 @@ static unsigned int client_encap(void *priv, struct sk_buff *skb,
 static unsigned int client_decap(void *priv, struct sk_buff *skb,
 		const struct nf_hook_state *state)
 {
+	int err;
+
 	if (!need_client_decap(skb))
 		return NF_ACCEPT;
 
-	if (do_client_decap(skb)) {
-		LOG_ERROR("drop packet in client decap");
+	err = do_client_decap(skb);
+	if (err) {
+		LOG_ERROR("failed to do client decap, drop packet: %d", err);
 		return NF_DROP;
 	}
 
@@ -425,7 +442,7 @@ static const struct nf_hook_ops iproxy_nf_ops[] = {
 	{
 		.hook = client_encap,
 		.pf = NFPROTO_IPV4,
-		.hooknum = NF_INET_FORWARD, /* used in forwarding mode, NEED iprtables defrag */
+		.hooknum = NF_INET_FORWARD,
 		.priority = NF_IP_PRI_CONNTRACK_DEFRAG + 1,
 	},
 	{

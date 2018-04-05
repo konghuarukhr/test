@@ -19,9 +19,10 @@
 //#define LINE(msg) (msg "\n")
 #define LINE(msg) msg "\n"
 #define LOG_DEBUG(msg, ...) pr_debug(ALIAS ": " "%s: " LINE(msg), __func__, ##__VA_ARGS__)
-#define LOG_INFO(msg, ...) pr_info(ALIAS ": " LINE(msg), ##__VA_ARGS__)
+#define LOG_INFO(msg, ...) pr_info(ALIAS ": " "%s: " LINE(msg), __func__, ##__VA_ARGS__)
 //#define LOG_INFO pr_info
-#define LOG_ERROR(msg, ...) pr_err(ALIAS ": " LINE(msg), ##__VA_ARGS__)
+#define LOG_WARN(msg, ...) pr_warn(ALIAS ": " "%s: " LINE(msg), __func__, ##__VA_ARGS__)
+#define LOG_ERROR(msg, ...) pr_err(ALIAS ": " "%s: " LINE(msg), __func__, ##__VA_ARGS__)
 //#define LOG_ERROR(msg, ...) pr_err(msg, ##__VA_ARGS__)
 //#define LOG_ERROR pr_err
 
