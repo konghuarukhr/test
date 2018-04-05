@@ -262,8 +262,6 @@ static int do_client_encap(struct sk_buff *skb)
 	__be32 sip;
 	__be32 dip;
 	__u16 nlen;
-	bool rewrite_dns;
-
 
 	iph = ip_hdr(skb);
 	sip = iph->saddr;
@@ -348,7 +346,6 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	__be32 sip;
 	__be32 dip;
 	__be32 pip;
-	bool rewrite_dns;
 
 
 	nhl = skb_network_header_len(skb);
@@ -362,15 +359,6 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	dip = iph->daddr;
 	LOG_DEBUG("%pI4 <- %pI4: decap", &dip, &sip);
 
-	if (!is_dns_no_special() && iph->protocol == IPPROTO_UDP &&
-			pskb_may_pull(skb, nhl + CAPL + sizeof(struct udphdr)) &&
-			*(__be16 *)(skb_transport_header(skb) + CAPL +
-				offsetof(struct udphdr, source)) == DNS_PORT) {
-		rewrite_dns = true;
-		LOG_DEBUG("%pI4 <- %pI4: rewrite DNS IP", &dip, &sip);
-	} else
-		rewrite_dns = false;
-
 	iph = ip_hdr(skb);
 	iprh = ipr_hdr(skb);
 	pip = iprh->ip;
@@ -381,7 +369,7 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 		route_table_add(route_table, pip, mask);
 	}
 	iph->protocol = iprh->protocol;
-	iph->saddr = rewrite_dns ? get_local_dns_ip() : pip;
+	iph->saddr = pip;
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
 	//ip_send_check(iph);
 
@@ -443,8 +431,8 @@ static const struct nf_hook_ops iproxy_nf_ops[] = {
 	{
 		.hook = client_decap,
 		.pf = NFPROTO_IPV4,
-		.hooknum = NF_INET_LOCAL_IN, /* after defrag */
-		.priority = NF_IP_PRI_FIRST,
+		.hooknum = NF_INET_PRE_ROUTING, /* after defrag */
+		.priority = NF_IP_PRI_CONNTRACK_DEFRAG + 1,
 	},
 	{
 		.hook = client_decap,
