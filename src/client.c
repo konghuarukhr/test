@@ -270,6 +270,9 @@ static int do_client_encap(struct sk_buff *skb)
 	struct udphdr *udph;
 	struct iprhdr *iprh;
 	__be32 pip;
+	volatile long begin, end;
+
+	begin = jiffies;
 
 	pip = get_server_ip();
 	nhl = skb_network_header_len(skb);
@@ -316,7 +319,8 @@ static int do_client_encap(struct sk_buff *skb)
 	masq_data(skb, get_password());
 	__skb_push(skb, nhl + CAPL);
 
-	LOG_DEBUG("%pI4 -> %pI4: go to proxy: %pI4", &sip, &dip, &pip);
+	end = jiffies;
+	LOG_DEBUG("%pI4 -> %pI4: go to proxy: %pI4, cost %ld", &sip, &dip, &pip, end - begin);
 	return 0;
 }
 
@@ -356,8 +360,15 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	__be32 dip;
 	__be32 rip;
 	struct iphdr *iph, *niph;
+	struct udphdr *udph;
 	struct iprhdr *iprh;
+	struct tcphdr *tcph;
+	struct dccp_hdr *dccph;
+	__u16 udplitecov;
+	__wsum csum;
+	volatile long begin, end;
 
+	begin = jiffies;
 	nhl = skb_network_header_len(skb);
 
 	__skb_pull(skb, nhl + CAPL);
@@ -393,8 +404,83 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	memmove(niph, iph, nhl);
 	skb_reset_network_header(skb);
 	skb_set_transport_header(skb, nhl);
+#if 1
+	switch (niph->protocol) {
+		case IPPROTO_UDP:
+			if (!pskb_may_pull(skb, nhl + sizeof(struct udphdr))) {
+				LOG_ERROR("%pI4 <- %pI4: UDP too short",
+						&dip, &sip);
+				return -ETOOSMALL;
+			}
+			udph = udp_hdr(skb);
+			/*
+			LOG_DEBUG("XXZ 0x%04x", udph->check);
+			LOG_DEBUG("XXY %pI4 %pI4 %u", &vip, &rip, udph->len);
+			LOG_DEBUG("XXY %pI4 %pI4 %u", &vip, &rip, ntohs(udph->len));
+			LOG_DEBUG("XXX %u %u", skb->csum_start, skb->csum_offset);
+			*/
+			udph->check = ~csum_tcpudp_magic(rip, dip, ntohs(udph->len),
+					IPPROTO_UDP, 0);
+			skb->ip_summed = CHECKSUM_PARTIAL;
+			skb->csum_start = skb_transport_header(skb) - skb->head;
+			skb->csum_offset = offsetof(struct udphdr, check);
+			//LOG_DEBUG("XXY 0x%04x", udph->check);
+			//LOG_DEBUG("XXX %u %u", skb->csum_start, skb->csum_offset);
+			break;
+		case IPPROTO_UDPLITE:
+			if (!pskb_may_pull(skb, nhl + sizeof(struct udphdr))) {
+				LOG_ERROR("%pI4 <- %pI4: UDPLITE too short",
+						&dip, &sip);
+				return -ETOOSMALL;
+			}
+			udph = udp_hdr(skb);
+			udplitecov = ntohs(udph->len);
+			if (!udplitecov)
+				udplitecov = skb->len -
+					skb_transport_offset(skb);
+			else if (udplitecov > skb->len -
+					skb_transport_offset(skb)) {
+				LOG_ERROR("%pI4 <- %pI4: UDPLITE coverage error",
+						&dip, &sip);
+				return -EFAULT;
+			}
+			csum = skb_checksum(skb, skb_transport_offset(skb),
+					udplitecov, 0);
+			udph->check = csum_tcpudp_magic(rip, dip, udph->len,
+					IPPROTO_UDP, csum);
+			if (!udph->check)
+				udph->check = CSUM_MANGLED_0;
+			skb->ip_summed = CHECKSUM_NONE;
+			break;
+		case IPPROTO_TCP:
+			if (!pskb_may_pull(skb, nhl + sizeof(struct tcphdr))) {
+				LOG_ERROR("%pI4 <- %pI4: TCP too short",
+						&dip, &sip);
+				return -ETOOSMALL;
+			}
+			tcph = tcp_hdr(skb);
+			tcph->check = ~csum_tcpudp_magic(rip, dip, skb->len -
+					skb_transport_offset(skb), IPPROTO_TCP,
+					0);
+			skb->ip_summed = CHECKSUM_PARTIAL;
+			skb->csum_start = skb_transport_header(skb) - skb->head;
+			skb->csum_offset = offsetof(struct tcphdr, check);
+			break;
+		case IPPROTO_DCCP:
+			if (!pskb_may_pull(skb, nhl + sizeof(struct dccp_hdr))) {
+				LOG_ERROR("%pI4 <- %pI4: DCCP too short",
+						&dip, &sip);
+				return -ETOOSMALL;
+			}
+			dccph = dccp_hdr(skb);
+			csum_replace4(&dccph->dccph_checksum, 0, rip);
+			skb->ip_summed = CHECKSUM_NONE;
+			break;
+	}
+#endif
 
-	LOG_DEBUG("%pI4 <- %pI4: received: %pI4", &dip, &sip, &rip);
+	end = jiffies;
+	LOG_DEBUG("%pI4 <- %pI4: received: %pI4, %ld", &dip, &sip, &rip, end - begin);
 	return 0;
 }
 
@@ -436,27 +522,32 @@ static const struct nf_hook_ops iproxy_nf_ops[] = {
 	{
 		.hook = client_encap,
 		.pf = NFPROTO_IPV4,
-		.hooknum = NF_INET_LOCAL_OUT, /* before frag, before routing */
+		//.hooknum = NF_INET_LOCAL_OUT, /* before frag, before routing */
+		.hooknum = NF_INET_POST_ROUTING,
 		.priority = NF_IP_PRI_LAST,
 	},
-	{
-		.hook = client_encap,
-		.pf = NFPROTO_IPV4,
-		.hooknum = NF_INET_FORWARD,
-		.priority = NF_IP_PRI_CONNTRACK_DEFRAG + 1,
-	},
-	{
-		.hook = client_decap,
-		.pf = NFPROTO_IPV4,
-		.hooknum = NF_INET_PRE_ROUTING, /* after defrag */
-		.priority = NF_IP_PRI_CONNTRACK_DEFRAG + 1,
-	},
+//	{
+//		.hook = client_encap,
+//		.pf = NFPROTO_IPV4,
+//		.hooknum = NF_INET_FORWARD,
+//		.priority = NF_IP_PRI_LAST,
+//		//.priority = NF_IP_PRI_CONNTRACK_DEFRAG + 1,
+//	},
 	{
 		.hook = client_decap,
 		.pf = NFPROTO_IPV4,
-		.hooknum = NF_INET_FORWARD, /* used in forwarding mode, NEED iptables defrag */
+		//.hooknum = NF_INET_LOCAL_IN, /* after defrag */
+		.hooknum = NF_INET_PRE_ROUTING,
+		//.priority = NF_IP_PRI_LAST,
 		.priority = NF_IP_PRI_CONNTRACK_DEFRAG + 1,
 	},
+//	{
+//		.hook = client_decap,
+//		.pf = NFPROTO_IPV4,
+//		.hooknum = NF_INET_FORWARD, /* used in forwarding mode, NEED iptables defrag */
+//		//.priority = NF_IP_PRI_CONNTRACK_DEFRAG + 1,
+//		.priority = NF_IP_PRI_FIRST,
+//	},
 };
 
 
