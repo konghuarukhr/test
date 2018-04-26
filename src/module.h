@@ -1,18 +1,24 @@
 static int __net_init iproxy_net_init(struct net *net)
 {
 	int err;
+	int i;
+
+	if (net != &init_net)
+		return 0;
+
+	for (i = 0; i < ARRAY_SIZE(iproxy_nf_ops); i++) {
+		iproxy_nf_ops[i].dev = dev_get_by_name(net, oif);
+		if (iproxy_nf_ops[i].dev)
+			LOG_INFO("YESSSSS");
+		else
+			LOG_INFO("NOOOOOO");
+	}
 
 	err = nf_register_net_hooks(net, iproxy_nf_ops,
 			ARRAY_SIZE(iproxy_nf_ops));
 	if (err) {
 		LOG_ERROR("failed to register nf hooks: %d", err);
 		goto nf_register_net_hooks_err;
-	}
-
-	err = genl_register_family(&iproxy_genl_family);
-	if (err) {
-		LOG_ERROR("failed to register genl family: %d", err);
-		goto genl_register_family_err;
 	}
 
 #ifdef SERVER /* or client on router */
@@ -32,11 +38,13 @@ static int __net_init iproxy_net_init(struct net *net)
 #ifdef SERVER /* or client on router */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0)
 nf_defrag_ipv4_enable_err:
-#endif
-#endif
-
-genl_register_family_err:
 	nf_unregister_net_hooks(net, iproxy_nf_ops, ARRAY_SIZE(iproxy_nf_ops));
+	for (i = 0; i < ARRAY_SIZE(iproxy_nf_ops); i++) {
+		if (iproxy_nf_ops[i].dev)
+			dev_put(iproxy_nf_ops[i].dev);
+	}
+#endif
+#endif
 
 nf_register_net_hooks_err:
 
@@ -45,9 +53,16 @@ nf_register_net_hooks_err:
 
 static void __net_exit iproxy_net_exit(struct net *net)
 {
-	genl_unregister_family(&iproxy_genl_family);
+	int i;
+
+	if (net != &init_net)
+		return;
 
 	nf_unregister_net_hooks(net, iproxy_nf_ops, ARRAY_SIZE(iproxy_nf_ops));
+	for (i = 0; i < ARRAY_SIZE(iproxy_nf_ops); i++) {
+		if (iproxy_nf_ops[i].dev)
+			dev_put(iproxy_nf_ops[i].dev);
+	}
 }
 
 static struct pernet_operations __net_initdata iproxy_net_ops = {
@@ -67,6 +82,12 @@ static int __init iproxy_init(void)
 		goto custom_init_err;
 	}
 
+	err = genl_register_family(&iproxy_genl_family);
+	if (err) {
+		LOG_ERROR("failed to register genl family: %d", err);
+		goto genl_register_family_err;
+	}
+
 	err = register_pernet_subsys(&iproxy_net_ops);
 	if (err) {
 		LOG_ERROR("failed to register net namespace: %d", err);
@@ -78,6 +99,9 @@ static int __init iproxy_init(void)
 	return 0;
 
 register_pernet_device_err:
+	genl_unregister_family(&iproxy_genl_family);
+
+genl_register_family_err:
 	custom_uninit();
 
 custom_init_err:
@@ -92,6 +116,8 @@ static void __exit iproxy_exit(void)
 	LOG_INFO("exiting...");
 
 	unregister_pernet_subsys(&iproxy_net_ops);
+
+	genl_unregister_family(&iproxy_genl_family);
 
 	custom_uninit();
 

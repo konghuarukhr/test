@@ -53,6 +53,10 @@ enum {
 	ROUTE_POLICY_MAX
 };
 
+static char *oif = NULL;
+module_param(oif, charp, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(dns_ip, "outer interface");
+
 /**
  * TODO: supports multi proxies
  */
@@ -518,7 +522,7 @@ static unsigned int client_decap(void *priv, struct sk_buff *skb,
 	return NF_ACCEPT;
 }
 
-static const struct nf_hook_ops iproxy_nf_ops[] = {
+static struct nf_hook_ops iproxy_nf_ops[] = {
 	{
 		.hook = client_encap,
 		.pf = NFPROTO_IPV4,
