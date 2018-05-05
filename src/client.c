@@ -33,9 +33,6 @@ static bool route_learn = 0;
 module_param(route_learn, bool, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(route_learn, "0: route learn from server; 1: route static (default 0)");
 
-static char *oif = NULL;
-module_param(oif, charp, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(dns_ip, "outer interface");
 
 /**
  * TODO: supports multi proxies
@@ -257,6 +254,8 @@ static bool need_client_decap(struct sk_buff *skb) {
 
 	udph = udp_hdr(skb);
 	if (!is_server_port(udph->source))
+		return false;
+	if (!is_local_port(udph->dest))
 		return false;
 
 	iprh = ipr_hdr(skb);

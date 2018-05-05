@@ -514,7 +514,7 @@ int main(int argc, char *argv[])
 			return -1;
 		}
 		if (add(IPR_GENL_NAME, argv[2], mask)) {
-			fprintf(stderr, "failed to add %s/%s\n", argv[2], mask);
+			fprintf(stderr, "failed to add %s/%s %s\n", argv[2], mask, strerror(errno));
 			return -1;
 		}
 	} else if (!strcmp(argv[1], "delete")) {
@@ -556,7 +556,7 @@ int main(int argc, char *argv[])
 	} else if (!strcmp(argv[1], "show")) {
 		char *rst;
 		if (!(rst = show(IPR_GENL_NAME))) {
-			fprintf(stderr, "failed to show\n");
+			fprintf(stderr, "failed to show %s\n", strerror(errno));
 			return -1;
 		}
 		printf("%s", rst);
@@ -567,7 +567,7 @@ int main(int argc, char *argv[])
 			return -1;
 		}
 		if (load(IPR_GENL_NAME, argv[2])) {
-			fprintf(stderr, "failed to load %s\n", argv[2]);
+			fprintf(stderr, "failed to load %s %s\n", argv[2], strerror(errno));
 			return -1;
 		}
 	} else {
