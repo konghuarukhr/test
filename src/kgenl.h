@@ -7,7 +7,6 @@
 #include "route.h"
 #include "ugenl.h"
 
-
 static struct route_table *route_table;
 static struct genl_family iproxy_genl_family;
 

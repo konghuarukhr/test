@@ -1,7 +1,7 @@
 #ifndef _ROUTE_H_
 #define _ROUTE_H_
 
-#include "common.h"
+#include <linux/types.h>
 
 struct route_table;
 

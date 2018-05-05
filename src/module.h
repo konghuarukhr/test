@@ -22,16 +22,11 @@ static int __net_init iproxy_net_init(struct net *net)
 	}
 #endif
 
-    LOG_DEBUG("net inited");
 	return 0;
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0)
 nf_defrag_ipv4_enable_err:
 	nf_unregister_net_hooks(net, iproxy_nf_ops, ARRAY_SIZE(iproxy_nf_ops));
-	for (i = 0; i < ARRAY_SIZE(iproxy_nf_ops); i++) {
-		if (iproxy_nf_ops[i].dev)
-			dev_put(iproxy_nf_ops[i].dev);
-	}
 #endif
 
 nf_register_net_hooks_err:
@@ -40,18 +35,10 @@ nf_register_net_hooks_err:
 
 static void __net_exit iproxy_net_exit(struct net *net)
 {
-	int i;
-
 	if (net != &init_net)
 		return;
 
 	nf_unregister_net_hooks(net, iproxy_nf_ops, ARRAY_SIZE(iproxy_nf_ops));
-	for (i = 0; i < ARRAY_SIZE(iproxy_nf_ops); i++) {
-		if (iproxy_nf_ops[i].dev)
-			dev_put(iproxy_nf_ops[i].dev);
-	}
-
-    LOG_DEBUG("net uninited");
 }
 
 static struct pernet_operations __net_initdata iproxy_net_ops = {
@@ -94,7 +81,7 @@ genl_register_family_err:
 	custom_uninit();
 
 custom_init_err:
-	LOG_ERROR("exited");
+	LOG_ERROR("failed to init");
 	return err;
 }
 

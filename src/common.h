@@ -1,7 +1,6 @@
 #ifndef _COMMON_H_
 #define _COMMON_H_
 
-#include <linux/module.h>
 #define LICENSE "GPL"
 #define VERSION "1.0"
 #define AUTHOR "Dustin Zheng <konghuarukhr@gmail.com>"
@@ -28,11 +27,15 @@
 
 #define DNS_PORT __constant_htons(53)
 
+#include "masq.h"
+#include "xlate.h"
+#include "ipr.h"
 #include <net/net_namespace.h>
 #include <net/sock.h>
 //#include <linux/kernel.h>
 #include <linux/bitops.h>
 #include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <linux/inet.h>
 #include <linux/printk.h>
 #include <linux/hashtable.h>
@@ -42,20 +45,13 @@
 #include <linux/ip.h>
 #include <linux/netfilter.h>
 #include <linux/skbuff.h>
-#include <uapi/linux/dccp.h>
-#include <uapi/linux/udp.h>
-#include <uapi/linux/tcp.h>
-#include <uapi/linux/ip.h>
-#include <uapi/linux/netfilter_ipv4.h>
+#include <linux/netfilter_ipv4.h>
 #include <net/ip.h>
 #include <net/genetlink.h>
 #include <net/netfilter/ipv4/nf_defrag_ipv4.h>
 #include <generated/uapi/linux/version.h>
 
-#include "ipr.h"
-#include "masq.h"
 #include "route.h"
-#include "xlate.h"
 #include "ugenl.h"
 
 

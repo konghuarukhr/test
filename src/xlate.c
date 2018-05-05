@@ -1,5 +1,4 @@
 #include "xlate.h"
-#include "common.h"
 
 #define XLATE_BITS 10
 

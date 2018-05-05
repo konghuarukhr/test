@@ -1,7 +1,7 @@
 #ifndef _XLATE_H_
 #define _XLATE_H_
 
-#include "common.h"
+#include <linux/types.h>
 
 struct xlate_table;
 

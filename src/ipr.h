@@ -1,6 +1,9 @@
 #ifndef _IPR_H_
 #define _IPR_H_
 
+#include <linux/skbuff.h>
+#include <linux/udp.h>
+
 /**
  * User can change the sequence of these fields to fool the dector.
  * But make sure that sizeof(struct iprhdr) == 8.
@@ -52,7 +55,6 @@ static inline void set_ipr_sc(struct iprhdr *iprh, __u8 protocol,
 }
 
 
-
 static inline int pskb_may_pull_iprhdr(struct sk_buff *skb)
 {
 	return pskb_may_pull(skb, skb_network_header_len(skb) + CAPL);
@@ -67,11 +69,6 @@ static inline struct iprhdr *ipr_hdr(const struct sk_buff *skb)
 {
 	return (struct iprhdr *)(skb_transport_header(skb) +
 			sizeof(struct udphdr));
-}
-
-static inline bool is_dns_port(const struct udphdr *udph)
-{
-	return udph->dest == __constant_htons(53);
 }
 
 /**

@@ -1,9 +1,9 @@
 #ifndef _MASQ_H_
 #define _MASQ_H_
 
-#include "common.h"
+#include <linux/skbuff.h>
 
-void masq_data(struct sk_buff *skb, unsigned long passwd);
-void demasq_data(struct sk_buff *skb, unsigned long passwd);
+__be32 masq_data(struct sk_buff *skb, unsigned int passwd);
+__be32 demasq_data(struct sk_buff *skb, unsigned int passwd);
 
 #endif

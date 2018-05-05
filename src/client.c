@@ -3,8 +3,6 @@
 
 #define ROUTE_EXPIRE 3600
 
-static struct route_table *route_table = NULL;
-
 static char *server_ip = NULL;
 module_param(server_ip, charp, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(server_ip, "server IP");
@@ -394,7 +392,7 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 			break;
 	}
 
-	LOG_DEBUG("%pI4 <- %pI4: from proxy: %pI4",
+	LOG_DEBUG("%pI4 <- %pI4: from remote: %pI4",
 			&dip, &sip, &rip);
 #ifdef DEBUG
 	LOG_DEBUG("%pI4 <- %pI4: cost %ld",

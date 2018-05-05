@@ -1,17 +1,17 @@
 #include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <linux/genetlink.h>
-#include <unistd.h>
 #include <errno.h>
+#include <linux/genetlink.h>
+#include <netinet/in.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdbool.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
 
-#include "ugenl-helper.h"
 #include "ugenl.h"
+#include "ugenl-helper.h"
 
 #ifdef _IPR_CLIENT
 #define IPR_GENL_NAME "IPROXY_CLIENT"
@@ -19,15 +19,6 @@
 #define IPR_GENL_NAME "IPROXY_SERVER"
 #endif
 
-
-static inline char *preparse(char *cidr)
-{
-	char *sep = strchr(cidr, '/');
-	if (!sep)
-		return NULL;
-	*sep = 0;
-	return sep + 1;
-}
 
 struct route_entry {
 	uint32_t network;
@@ -55,7 +46,6 @@ static struct route_table *create_route_table(void)
 
 	return rt_tbl;
 }
-
 
 static bool route_table_need_expand(struct route_table *rt_tbl)
 {
@@ -90,6 +80,15 @@ static void destroy_route_table(struct route_table *rt_tbl)
 	free(rt_tbl);
 }
 
+static inline char *preparse(char *cidr)
+{
+	char *sep = strchr(cidr, '/');
+	if (!sep)
+		return NULL;
+	*sep = 0;
+	return sep + 1;
+}
+
 static struct route_table *load_route_table(const char *file)
 {
 	struct route_table *rt_tbl = create_route_table();
@@ -100,7 +99,7 @@ static struct route_table *load_route_table(const char *file)
 
 	FILE *fp = fopen(file, "r");
 	if (!fp) {
-		fprintf(stderr, "failed to open file [%s]: %s\n", file,
+		fprintf(stderr, "failed to open file %s: %s\n", file,
 				strerror(errno));
 		return rt_tbl;
 	}
@@ -112,18 +111,18 @@ static struct route_table *load_route_table(const char *file)
 
 		char *sep = preparse(line);
 		if (!sep) {
-			fprintf(stderr, "failed to parse on line [%d]\n", i);
+			fprintf(stderr, "failed to parse on line %d\n", i);
 			continue;
 		}
 
 		struct in_addr ip;
 		if (!inet_aton(line, &ip)) {
-			fprintf(stderr, "failed to convert on line [%d]\n", i);
+			fprintf(stderr, "failed to convert on line %d\n", i);
 			continue;
 		}
 		int mask = atoi(sep);
 		if (mask <= 0) {
-			fprintf(stderr, "failed to convert on line [%d]\n", i);
+			fprintf(stderr, "failed to convert on line %d\n", i);
 			continue;
 		}
 
@@ -133,12 +132,12 @@ static struct route_table *load_route_table(const char *file)
 			return rt_tbl;
 		}
 
-		fill_route_table(rt_tbl, ip.s_addr, (uint8_t)mask);
+		fill_route_table(rt_tbl, ip.s_addr, mask);
 	}
 
 	if (fclose(fp)) {
-		fprintf(stderr, "failed to close file %s: %s\n", file,
-				strerror(errno));
+		fprintf(stderr, "failed to close file %s: %s\n",
+			file, strerror(errno));
 	}
 
 	return rt_tbl;
@@ -361,7 +360,7 @@ static int delete(const char *genl_name, const char *network_str,
 	if (mask <= 0)
 		return -1;
 
-	int err = delete_kernel_route(genlsk, network.s_addr, (uint8_t)mask);
+	int err = delete_kernel_route(genlsk, network.s_addr, mask);
 
 	close_genl_socket(genlsk);
 
@@ -514,7 +513,8 @@ int main(int argc, char *argv[])
 			return -1;
 		}
 		if (add(IPR_GENL_NAME, argv[2], mask)) {
-			fprintf(stderr, "failed to add %s/%s %s\n", argv[2], mask, strerror(errno));
+			fprintf(stderr, "failed to add %s/%s: %s\n",
+				argv[2], mask, strerror(errno));
 			return -1;
 		}
 	} else if (!strcmp(argv[1], "delete")) {
@@ -525,20 +525,21 @@ int main(int argc, char *argv[])
 		char *mask = preparse(argv[2]);
 		if (!mask) {
 			if (delete_match(IPR_GENL_NAME, argv[2])) {
-				fprintf(stderr, "failed to delete match %s\n",
-						argv[2]);
+				fprintf(stderr, "failed to delete match %s: %s\n",
+						argv[2], strerror(errno));
 				return -1;
 			}
 		} else {
 			if (delete(IPR_GENL_NAME, argv[2], mask)) {
-				fprintf(stderr, "failed to delete %s/%s\n",
-						argv[2], mask);
+				fprintf(stderr, "failed to delete %s/%s: %s\n",
+						argv[2], mask, strerror(errno));
 				return -1;
 			}
 		}
 	} else if (!strcmp(argv[1], "clear")) {
 		if (clear(IPR_GENL_NAME)) {
-			fprintf(stderr, "failed to clear\n");
+			fprintf(stderr, "failed to clear: %s\n",
+				strerror(errno));
 			return -1;
 		}
 	} else if (!strcmp(argv[1], "find")) {
@@ -548,7 +549,8 @@ int main(int argc, char *argv[])
 		}
 		char *rst;
 		if (!(rst = find(IPR_GENL_NAME, argv[2]))) {
-			fprintf(stderr, "failed to find %s\n", argv[2]);
+			fprintf(stderr, "failed to find %s: %s\n",
+				argv[2], strerror(errno));
 			return -1;
 		}
 		printf("%s\n", rst);
@@ -556,7 +558,8 @@ int main(int argc, char *argv[])
 	} else if (!strcmp(argv[1], "show")) {
 		char *rst;
 		if (!(rst = show(IPR_GENL_NAME))) {
-			fprintf(stderr, "failed to show %s\n", strerror(errno));
+			fprintf(stderr, "failed to show: %s\n",
+				strerror(errno));
 			return -1;
 		}
 		printf("%s", rst);
@@ -567,7 +570,8 @@ int main(int argc, char *argv[])
 			return -1;
 		}
 		if (load(IPR_GENL_NAME, argv[2])) {
-			fprintf(stderr, "failed to load %s %s\n", argv[2], strerror(errno));
+			fprintf(stderr, "failed to load %s: %s\n",
+				argv[2], strerror(errno));
 			return -1;
 		}
 	} else {
