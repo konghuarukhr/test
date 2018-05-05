@@ -25,6 +25,7 @@ all:
 
 clean:
 	make -C $(KDIR) M=$(PWD) clean
+	rm -rf route-cli
 
 tool:
 	cc $(ccflags-y) route-cli.c ugenl-helper.c -o route-cli
