@@ -1,6 +1,7 @@
 # https://www.kernel.org/doc/Documentation/kbuild/modules.txt
 
 KDIR=/lib/modules/$(shell uname -r)/build
+#export CROSS_COMPILE=
 #KDIR=/root/android/kernel/msm
 
 ifeq ($(m),client)

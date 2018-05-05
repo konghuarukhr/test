@@ -10,48 +10,28 @@ module_param(server_ip, charp, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(server_ip, "server IP");
 static __be32 _server_ip = 0;
 
-static unsigned short client_port = 0;
-module_param(client_port, ushort, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(client_port, "client UDP port");
-static __be16 _client_port = 0;
-
 static unsigned short server_port = 0;
 module_param(server_port, ushort, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(server_port, "server UDP port");
 static __be16 _server_port = 0;
 
+static unsigned short local_port = 0;
+module_param(local_port, ushort, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(local_port, "local UDP port (default server_port)");
+static __be16 _local_port = 0;
+
 static unsigned short user = 0;
 module_param(user, ushort, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(user, "user");
+MODULE_PARM_DESC(user, "user (default 0)");
 static __be16 _user = 0;
 
 static unsigned long password = 0;
 module_param(password, ulong, 0);
-MODULE_PARM_DESC(password, "password");
+MODULE_PARM_DESC(password, "password (default 0)");
 
-static unsigned char dns_policy = 0;
-module_param(dns_policy, byte, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(dns_policy, "0: proxy all; 1: not proxy private IP; 2: no special");
-enum {
-	DNS_ALL,
-	DNS_PUBLIC,
-	DNS_NO_SPECIAL,
-	DNS_POLICY_MAX
-};
-
-static char *dns_ip = NULL;
-module_param(dns_ip, charp, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(dns_ip, "DNS IP used to replace private DNS IP or noproxy DNS IP");
-static __be32 _dns_ip = 0;
-
-static unsigned char route_policy = 0;
-module_param(route_policy, byte, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(route_policy, "0: route proxy traffic; 1: route all traffic");
-enum {
-	ROUTE_PROXY,
-	ROUTE_ALL,
-	ROUTE_POLICY_MAX
-};
+static bool route_learn = 0;
+module_param(route_learn, bool, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(route_learn, "0: route learn from server; 1: route static (default 0)");
 
 static char *oif = NULL;
 module_param(oif, charp, S_IRUSR | S_IRGRP | S_IROTH);
@@ -60,24 +40,19 @@ MODULE_PARM_DESC(dns_ip, "outer interface");
 /**
  * TODO: supports multi proxies
  */
-static inline bool is_server_ip(__be32 ip)
-{
-	return ip == _server_ip;
-}
-
 static inline __be32 get_server_ip(void)
 {
 	return _server_ip;
 }
 
-static inline bool is_client_port(__be16 port)
+static inline bool is_server_ip(__be32 ip)
 {
-	return port == _client_port;
+	return ip == _server_ip;
 }
 
-static inline __be16 get_client_port(void)
+static inline __be16 get_server_port(void)
 {
-	return _client_port;
+	return _server_port;
 }
 
 static inline bool is_server_port(__be16 port)
@@ -85,9 +60,14 @@ static inline bool is_server_port(__be16 port)
 	return port == _server_port;
 }
 
-static inline __be16 get_server_port(void)
+static inline __be16 get_local_port(void)
 {
-	return _server_port;
+	return _local_port;
+}
+
+static inline bool is_local_port(__be16 port)
+{
+	return port == _local_port;
 }
 
 static inline __be16 my_get_user(void)
@@ -100,34 +80,9 @@ static inline unsigned long get_password(void)
 	return password;
 }
 
-static inline bool is_dns_all(void)
+static inline bool is_route_learn(void)
 {
-	return dns_policy == DNS_ALL;
-}
-
-static inline bool is_dns_public(void)
-{
-	return dns_policy == DNS_PUBLIC;
-}
-
-static inline bool is_dns_no_special(void)
-{
-	return dns_policy == DNS_NO_SPECIAL;
-}
-
-static inline __be32 get_dns_ip(void)
-{
-	return _dns_ip;
-}
-
-static inline bool is_route_proxy(void)
-{
-	return route_policy == ROUTE_PROXY;
-}
-
-static inline bool is_route_all(void)
-{
-	return route_policy == ROUTE_ALL;
+	return route_learn;
 }
 
 
@@ -140,36 +95,18 @@ static int params_init(void)
 		return -EINVAL;
 	}
 
-	_client_port = htons(client_port);
-	if (!_client_port) {
-		LOG_ERROR("client_port param error");
-		return -EINVAL;
-	}
-
 	_server_port = htons(server_port);
 	if (!_server_port) {
 		LOG_ERROR("server_port param error");
 		return -EINVAL;
 	}
 
+	_local_port = htons(local_port);
+	if (!_local_port) {
+		_local_port = _server_port;
+	}
+
 	_user = htons(user);
-
-	if (dns_policy >= DNS_POLICY_MAX) {
-		LOG_ERROR("dns_policy param error");
-		return -EINVAL;
-	}
-
-	if (dns_ip)
-		_dns_ip = in_aton(dns_ip);
-	if (!_dns_ip && !is_dns_no_special()) {
-		LOG_ERROR("dns_ip param error");
-		return -EINVAL;
-	}
-
-	if (route_policy >= ROUTE_POLICY_MAX) {
-		LOG_ERROR("route_policy param error");
-		return -EINVAL;
-	}
 
 	return 0;
 }
@@ -211,42 +148,12 @@ static void custom_uninit(void)
 }
 
 
-static inline bool is_noproxy_ip(__be32 ip)
-{
-	return route_table_find(route_table, ip);
-}
-
-/**
- * dirty local DNS IP
- * we assume only one IP will be used in a period of time
- * we don't use lock to protect it to avoid overhead
- * if we get the wrong local_dns_ip, it will lead to packet drop, and retransmit
- * this packet
- * this should not be used in router where many clients used different DNS IP go
- * through the router
- */
-static __be32 local_dns_ip = 0;
-
-static inline void set_local_dns_ip(__be32 ip)
-{
-	if (local_dns_ip != ip)
-		local_dns_ip = ip;
-}
-
-static inline __be32 get_local_dns_ip(void)
-{
-	return local_dns_ip;
-}
-
-
 static bool need_client_encap(struct sk_buff *skb)
 {
 	struct iphdr *iph;
-	__be32 sip;
 	__be32 dip;
 
 	iph = ip_hdr(skb);
-	sip = iph->saddr;
 	dip = iph->daddr;
 
 	/* Do we need this? */
@@ -256,10 +163,10 @@ static bool need_client_encap(struct sk_buff *skb)
 	if (is_private_ip(dip))
 		return false;
 
-	if (is_noproxy_ip(dip))
+	if (route_table_find(route_table, dip))
 		return false;
 
-	LOG_DEBUG("%pI4 -> %pI4: yes", &sip, &dip);
+	LOG_DEBUG("%pI4 -> %pI4: yes", &iph->saddr, &dip);
 	return true;
 }
 
@@ -274,9 +181,10 @@ static int do_client_encap(struct sk_buff *skb)
 	struct udphdr *udph;
 	struct iprhdr *iprh;
 	__be32 pip;
-	volatile long begin, end;
 
-	begin = jiffies;
+#ifdef DEBUG
+	volatile long begin = jiffies;
+#endif
 
 	pip = get_server_ip();
 	nhl = skb_network_header_len(skb);
@@ -287,14 +195,15 @@ static int do_client_encap(struct sk_buff *skb)
 	nlen = ntohs(iph->tot_len) + CAPL;
 	LOG_DEBUG("%pI4 -> %pI4: encap", &sip, &dip);
 	if (unlikely(nlen < CAPL)) {
+		/* packet length overflow after encap */
 		LOG_ERROR("%pI4 -> %pI4: packet too large", &sip, &dip);
 		return -EMSGSIZE;
 	}
 
 	err = skb_cow(skb, CAPL);
 	if (err) {
-		LOG_ERROR("%pI4 -> %pI4: failed to do skb_cow: %d", &sip, &dip,
-				err);
+		LOG_ERROR("%pI4 -> %pI4: failed to do skb_cow: %d",
+				&sip, &dip, err);
 		return err;
 	}
 
@@ -308,7 +217,7 @@ static int do_client_encap(struct sk_buff *skb)
 	set_ipr_cs(iprh, niph->protocol, my_get_user(), dip);
 
 	udph = udp_hdr(skb);
-	udph->source = get_client_port();
+	udph->source = get_local_port();
 	udph->dest = get_server_port();
 	udph->len = htons(nlen - nhl);
 	udph->check = 0;
@@ -323,8 +232,12 @@ static int do_client_encap(struct sk_buff *skb)
 	masq_data(skb, get_password());
 	__skb_push(skb, nhl + CAPL);
 
-	end = jiffies;
-	LOG_DEBUG("%pI4 -> %pI4: go to proxy: %pI4, cost %ld", &sip, &dip, &pip, end - begin);
+	LOG_DEBUG("%pI4 -> %pI4: go to proxy: %pI4",
+			&sip, &dip, &pip);
+#ifdef DEBUG
+	LOG_DEBUG("%pI4 -> %pI4: cost %ld",
+			&sip, &dip, jiffies - begin);
+#endif
 	return 0;
 }
 
@@ -339,7 +252,6 @@ static bool need_client_decap(struct sk_buff *skb) {
 	if (iph->protocol != IPPROTO_UDP)
 		return false;
 
-	/* skb is defraged */
 	if (!pskb_may_pull_iprhdr(skb))
 		return false;
 
@@ -370,9 +282,11 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	struct dccp_hdr *dccph;
 	__u16 udplitecov;
 	__wsum csum;
-	volatile long begin, end;
 
-	begin = jiffies;
+#ifdef DEBUG
+	volatile long begin = jiffies;
+#endif
+
 	nhl = skb_network_header_len(skb);
 
 	__skb_pull(skb, nhl + CAPL);
@@ -386,10 +300,10 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	rip = iprh->ip;
 	LOG_DEBUG("%pI4 <- %pI4: decap", &dip, &sip);
 
-	if (iprh->mask) {
-		__u8 mask = ntohs(iprh->mask);
-		LOG_DEBUG("%pI4 <- %pI4: add route %pI4/%u", &dip, &sip, &rip,
-				mask);
+	if (is_route_learn() && iprh->mask) {
+		__u8 mask = iprh->mask;
+		LOG_INFO("%pI4 <- %pI4: add route %pI4/%u",
+				&dip, &sip, &rip, mask);
 		err = route_table_add_expire(route_table, rip, mask,
 				ROUTE_EXPIRE);
 		if (err)
@@ -402,13 +316,12 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 	iph->tot_len = htons(ntohs(iph->tot_len) - CAPL);
 	ip_send_check(iph);
 
-	//skb->ip_summed = CHECKSUM_COMPLETE;
-
 	niph = (struct iphdr *)__skb_pull(skb, CAPL);
 	memmove(niph, iph, nhl);
 	skb_reset_network_header(skb);
 	skb_set_transport_header(skb, nhl);
-#if 1
+
+	//skb->ip_summed = CHECKSUM_COMPLETE;
 	switch (niph->protocol) {
 		case IPPROTO_UDP:
 			if (!pskb_may_pull(skb, nhl + sizeof(struct udphdr))) {
@@ -481,10 +394,13 @@ static unsigned int do_client_decap(struct sk_buff *skb)
 			skb->ip_summed = CHECKSUM_NONE;
 			break;
 	}
-#endif
 
-	end = jiffies;
-	LOG_DEBUG("%pI4 <- %pI4: received: %pI4, %ld", &dip, &sip, &rip, end - begin);
+	LOG_DEBUG("%pI4 <- %pI4: from proxy: %pI4",
+			&dip, &sip, &rip);
+#ifdef DEBUG
+	LOG_DEBUG("%pI4 <- %pI4: cost %ld",
+			&dip, &sip, jiffies - begin);
+#endif
 	return 0;
 }
 
@@ -526,32 +442,15 @@ static struct nf_hook_ops iproxy_nf_ops[] = {
 	{
 		.hook = client_encap,
 		.pf = NFPROTO_IPV4,
-		//.hooknum = NF_INET_LOCAL_OUT, /* before frag, before routing */
 		.hooknum = NF_INET_POST_ROUTING,
 		.priority = NF_IP_PRI_LAST,
 	},
-//	{
-//		.hook = client_encap,
-//		.pf = NFPROTO_IPV4,
-//		.hooknum = NF_INET_FORWARD,
-//		.priority = NF_IP_PRI_LAST,
-//		//.priority = NF_IP_PRI_CONNTRACK_DEFRAG + 1,
-//	},
 	{
 		.hook = client_decap,
 		.pf = NFPROTO_IPV4,
-		//.hooknum = NF_INET_LOCAL_IN, /* after defrag */
 		.hooknum = NF_INET_PRE_ROUTING,
-		//.priority = NF_IP_PRI_LAST,
 		.priority = NF_IP_PRI_CONNTRACK_DEFRAG + 1,
 	},
-//	{
-//		.hook = client_decap,
-//		.pf = NFPROTO_IPV4,
-//		.hooknum = NF_INET_FORWARD, /* used in forwarding mode, NEED iptables defrag */
-//		//.priority = NF_IP_PRI_CONNTRACK_DEFRAG + 1,
-//		.priority = NF_IP_PRI_FIRST,
-//	},
 };
 
 

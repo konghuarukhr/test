@@ -11,7 +11,7 @@ struct iprhdr {
 	__u8 protocol;
 	union {
 		__be16 user;
-		__be16 mask;
+		__u8 mask;
 	};
 	__be32 ip;
 };
@@ -47,7 +47,7 @@ static inline void set_ipr_sc(struct iprhdr *iprh, __u8 protocol,
 {
 	iprh->type = IPR_S_C;
 	iprh->protocol = protocol;
-	iprh->mask = htons(mask);
+	iprh->mask = mask;
 	iprh->ip = ip;
 }
 

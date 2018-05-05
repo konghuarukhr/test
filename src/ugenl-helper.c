@@ -139,11 +139,12 @@ struct genlsk *open_genl_socket(const char *name)
 				sizeof(timeout)) < 0)
 		goto close_genlsk;
 
+	//bind first?
 	struct sockaddr_nl src;
 	memset(&src, 0, sizeof src);
 	src.nl_family = AF_NETLINK;
 	src.nl_pid = getpid();
-	if (connect(fd, (struct sockaddr *)&src, sizeof src) < 0)
+	if (bind(fd, (struct sockaddr *)&src, sizeof src) < 0)
 		goto close_genlsk;
 
 	struct sockaddr_nl dst;

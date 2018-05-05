@@ -1,7 +1,7 @@
 #include "common.h"
 #include "kgenl.h"
 
-#define VIP_EXPIRE 5
+#define VIP_EXPIRE 5000
 
 static struct xlate_table *xlate_table = NULL;
 
@@ -10,20 +10,20 @@ module_param(local_ip, charp, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(local_ip, "local IP for receiving packets from client");
 static __be32 _local_ip = 0;
 
-static unsigned short server_port = 0;
-module_param(server_port, ushort, S_IRUSR | S_IRGRP | S_IROTH);
-MODULE_PARM_DESC(server_port, "UDP port used and reserved");
-static __be16 _server_port = 0;
+static unsigned short local_port = 0;
+module_param(local_port, ushort, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(local_port, "UDP port used and reserved");
+static __be16 _local_port = 0;
 
 static char *vip_start = NULL;
 module_param(vip_start, charp, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(vip_start, "virtual and unreachable client IP range from");
 static __u32 _vip_start = 0;
-static __u32 _vip_end = 0;
 
 static unsigned int vip_number = 0;
 module_param(vip_number, uint, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(vip_number, "virtual and unreachable client IP total number");
+static __u32 _vip_end = 0;
 
 
 static inline __be32 get_local_ip(void)
@@ -36,14 +36,14 @@ static inline bool is_local_ip(__be32 ip)
 	return ip == _local_ip;
 }
 
-static inline __be16 get_server_port(void)
+static inline __be16 get_local_port(void)
 {
-	return _server_port;
+	return _local_port;
 }
 
-static inline bool is_server_port(__be16 port)
+static inline bool is_local_port(__be16 port)
 {
-	return port == _server_port;
+	return port == _local_port;
 }
 
 static inline __u32 get_vip_start(void)
@@ -51,14 +51,14 @@ static inline __u32 get_vip_start(void)
 	return _vip_start;
 }
 
-static inline bool is_in_vip_range(__u32 ip)
-{
-	return ip >= _vip_start && ip < _vip_end;
-}
-
 static inline unsigned int get_vip_number(void)
 {
 	return vip_number;
+}
+
+static inline bool is_in_vip_range(__u32 ip)
+{
+	return ip >= _vip_start && ip < _vip_end;
 }
 
 static inline unsigned long get_password(__be16 user)
@@ -75,10 +75,10 @@ static int params_init(void)
 		return -EINVAL;
 	}
 
-	if (server_port != 0)
-		_server_port = htons(server_port);
-	if (_server_port == 0) {
-		LOG_ERROR("server_port param error");
+	if (local_port != 0)
+		_local_port = htons(local_port);
+	if (_local_port == 0) {
+		LOG_ERROR("local_port param error");
 		return -EINVAL;
 	}
 
@@ -146,11 +146,6 @@ static void custom_uninit(void)
 	params_uninit();
 }
 
-static inline bool is_noproxy_ip(__be32 ip)
-{
-	return route_table_find(route_table, ip);
-}
-
 static bool need_server_decap(struct sk_buff *skb)
 {
 	struct iphdr *iph;
@@ -163,20 +158,20 @@ static bool need_server_decap(struct sk_buff *skb)
 	if (iph->protocol != IPPROTO_UDP)
 		return false;
 
-	/* skb is defraged */
 	if (!pskb_may_pull_iprhdr(skb))
 		return false;
 
 	udph = udp_hdr(skb);
-	if (!is_server_port(udph->dest))
+	if (!is_local_port(udph->dest))
 		return false;
 
 	iprh = ipr_hdr(skb);
 	if (!is_ipr_cs(iprh))
 		return false;
 
-	LOG_DEBUG("%pI4:%u -> %pI4: yes", &ip_hdr(skb)->saddr,
-			ntohs(udph->source), &ip_hdr(skb)->daddr);
+	LOG_DEBUG("%pI4:%u:%u -> %pI4: yes",
+			&ip_hdr(skb)->saddr, ntohs(udph->source),
+			ntohs(iprh->user), &ip_hdr(skb)->daddr);
 	return true;
 }
 
@@ -198,6 +193,10 @@ static int do_server_decap(struct sk_buff *skb)
 	__u16 udplitecov;
 	__wsum csum;
 
+#ifdef DEBUG
+	volatile long begin = jiffies;
+#endif
+
 	nhl = skb_network_header_len(skb);
 
 	iprh = ipr_hdr(skb);
@@ -214,18 +213,17 @@ static int do_server_decap(struct sk_buff *skb)
 	dip = iph->daddr;
 	sport = udph->source;
 	rip = iprh->ip;
-	LOG_DEBUG("%pI4:%u -> %pI4: decap", &sip, ntohs(sport), &dip);
+	LOG_DEBUG("%pI4:%u:%u -> %pI4: decap",
+			&sip, ntohs(sport), ntohs(user), &dip);
 
 	err = xlate_table_lookup_vip(xlate_table, sip, sport, user, &vip);
 	if (err) {
-		LOG_ERROR("%pI4:%u -> %pI4: failed to lookup xlate vip by ip %p4I port %u user %u: %d",
-				&sip, ntohs(sport), &dip, &sip, ntohs(sport),
-				ntohs(user), err);
+		LOG_ERROR("%pI4:%u:%u -> %pI4: failed to find xlate vip: %d",
+				&sip, ntohs(sport), ntohs(user), &dip, err);
 		return err;
 	}
-	LOG_DEBUG("%pI4:%u -> %pI4: found xlate vip %pI4 by ip %pI4 port %u user %u",
-			&sip, ntohs(sport), &dip, &vip, &sip, ntohs(sport),
-			ntohs(user));
+	LOG_DEBUG("%pI4:%u:%u -> %pI4: found xlate vip %pI4",
+			&sip, ntohs(sport), ntohs(user), &dip, &vip);
 
 	iph->protocol = iprh->protocol;
 	iph->saddr = vip;
@@ -311,8 +309,12 @@ static int do_server_decap(struct sk_buff *skb)
 			break;
 	}
 
-	LOG_DEBUG("%pI4:%u -> %pI4: go to server: %pI4 -> %pI4", &sip,
-			ntohs(sport), &dip, &vip, &rip);
+	LOG_DEBUG("%pI4:%u:%u -> %pI4: go to server: %pI4 -> %pI4",
+			&sip, ntohs(sport), ntohs(user), &dip, &vip, &rip);
+#ifdef DEBUG
+	LOG_DEBUG("%pI4:%u:%u -> %pI4: cost %ld",
+			&sip, ntohs(sport), ntohs(user), &dip, jiffies - begin);
+#endif
 	return 0;
 }
 
@@ -343,6 +345,10 @@ static int do_server_encap(struct sk_buff *skb)
 	__be16 xuser;
 	__be32 lip;
 
+#ifdef DEBUG
+	volatile long begin = jiffies;
+#endif
+
 	lip = get_local_ip();
 	nhl = skb_network_header_len(skb);
 
@@ -352,6 +358,7 @@ static int do_server_encap(struct sk_buff *skb)
 	nlen = ntohs(iph->tot_len) + CAPL;
 	LOG_DEBUG("%pI4 <- %pI4: encap", &dip, &sip);
 	if (unlikely(nlen < CAPL)) {
+		/* packet length overflow after encap */
 		LOG_ERROR("%pI4 <- %pI4: packet too large", &dip, &sip);
 		return -EMSGSIZE;
 	}
@@ -368,8 +375,8 @@ static int do_server_encap(struct sk_buff *skb)
 
 	err = skb_cow(skb, CAPL);
 	if (err) {
-		LOG_ERROR("%pI4 <- %pI4: failed to do skb_cow: %d", &dip, &sip,
-				err);
+		LOG_ERROR("%pI4 <- %pI4: failed to do skb_cow: %d",
+				&dip, &sip, err);
 		return err;
 	}
 
@@ -384,7 +391,7 @@ static int do_server_encap(struct sk_buff *skb)
 			sip);
 
 	udph = udp_hdr(skb);
-	udph->source = get_server_port();
+	udph->source = get_local_port();
 	udph->dest = xport;
 	udph->len = htons(nlen - nhl);
 	udph->check = 0;
@@ -400,8 +407,11 @@ static int do_server_encap(struct sk_buff *skb)
 	masq_data(skb, get_password(xuser));
 	__skb_push(skb, nhl + CAPL);
 
-	LOG_DEBUG("%pI4 <- %pI4: go to client: %pI4:%u <- %pI4", &dip, &sip,
-			&xip, ntohs(xport), &lip);
+	LOG_DEBUG("%pI4 <- %pI4: go to client: %pI4:%u <- %pI4",
+			&dip, &sip, &xip, ntohs(xport), &lip);
+#ifdef DEBUG
+	LOG_DEBUG("%pI4 <- %pI4: cost %ld", &dip, &sip, jiffies - begin);
+#endif
 	return 0;
 }
 
@@ -449,7 +459,7 @@ static const struct nf_hook_ops iproxy_nf_ops[] = {
 	{
 		.hook = server_encap,
 		.pf = NFPROTO_IPV4,
-		.hooknum = NF_INET_PRE_ROUTING,
+		.hooknum = NF_INET_POST_ROUTING,
 		.priority = NF_IP_PRI_LAST,
 	},
 };

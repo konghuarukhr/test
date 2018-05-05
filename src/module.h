@@ -7,11 +7,13 @@ static int __net_init iproxy_net_init(struct net *net)
 		return 0;
 
 	for (i = 0; i < ARRAY_SIZE(iproxy_nf_ops); i++) {
+		/*
 		iproxy_nf_ops[i].dev = dev_get_by_name(net, oif);
 		if (iproxy_nf_ops[i].dev)
 			LOG_INFO("YESSSSS");
 		else
 			LOG_INFO("NOOOOOO");
+			*/
 	}
 
 	err = nf_register_net_hooks(net, iproxy_nf_ops,
@@ -21,7 +23,6 @@ static int __net_init iproxy_net_init(struct net *net)
 		goto nf_register_net_hooks_err;
 	}
 
-#ifdef SERVER /* or client on router */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0)
 	nf_defrag_ipv4_enable();
 #else
@@ -31,11 +32,9 @@ static int __net_init iproxy_net_init(struct net *net)
 		goto nf_defrag_ipv4_enable_err;
 	}
 #endif
-#endif
 
 	return 0;
 
-#ifdef SERVER /* or client on router */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0)
 nf_defrag_ipv4_enable_err:
 	nf_unregister_net_hooks(net, iproxy_nf_ops, ARRAY_SIZE(iproxy_nf_ops));
@@ -44,10 +43,8 @@ nf_defrag_ipv4_enable_err:
 			dev_put(iproxy_nf_ops[i].dev);
 	}
 #endif
-#endif
 
 nf_register_net_hooks_err:
-
 	return err;
 }
 
@@ -105,9 +102,7 @@ genl_register_family_err:
 	custom_uninit();
 
 custom_init_err:
-
 	LOG_ERROR("exited");
-
 	return err;
 }
 
