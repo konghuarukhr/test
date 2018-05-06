@@ -1,4 +1,8 @@
 #include "xlate.h"
+#include <linux/hashtable.h>
+#include <linux/timer.h>
+#include <linux/slab.h>
+#include "common.h"
 
 #define XLATE_BITS 10
 
