@@ -31,6 +31,10 @@ static bool route_learn = 0;
 module_param(route_learn, bool, S_IRUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(route_learn, "0: route learn from server; 1: route static (default 0)");
 
+static bool disable = 0;
+module_param(disable, bool, S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(disable, "0: enabled; 1: disabled (default 0)");
+
 
 /**
  * TODO: supports multi proxies
@@ -148,6 +152,9 @@ static bool need_client_encap(struct sk_buff *skb)
 	struct iphdr *iph;
 	__be32 dip;
 
+	if (disable)
+		return false;
+
 	iph = ip_hdr(skb);
 	dip = iph->daddr;
 
@@ -160,11 +167,6 @@ static bool need_client_encap(struct sk_buff *skb)
 
 	if (route_table_find(route_table, dip))
 		return false;
-
-	if (skb_is_gso(skb)) {
-		LOG_INFO("%pI4 -> %pI4: gso, not supported yet",
-				&iph->saddr, &dip);
-	}
 
 	LOG_DEBUG("%pI4 -> %pI4: yes", &iph->saddr, &dip);
 	return true;
