@@ -161,6 +161,11 @@ static bool need_client_encap(struct sk_buff *skb)
 	if (route_table_find(route_table, dip))
 		return false;
 
+	if (skb_is_gso(skb)) {
+		LOG_INFO("%pI4 -> %pI4: gso, not supported yet",
+				&iph->saddr, &dip);
+	}
+
 	LOG_DEBUG("%pI4 -> %pI4: yes", &iph->saddr, &dip);
 	return true;
 }
