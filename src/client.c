@@ -77,7 +77,7 @@ static inline unsigned long get_password(void)
 
 static inline bool is_route_learn(void)
 {
-	return route_learn;
+	return route_learn == 0;
 }
 
 
